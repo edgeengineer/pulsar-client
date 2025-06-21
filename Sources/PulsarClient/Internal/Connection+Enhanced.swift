@@ -10,7 +10,7 @@ extension Connection {
     
     /// Send a command and wait for response
     func sendRequest<Response>(_ frame: PulsarFrame, responseType: Response.Type) async throws -> Response where Response: ResponseCommand {
-        guard await state == .connected else {
+        guard state == .connected else {
             throw PulsarClientError.connectionFailed("Not connected")
         }
         
@@ -46,7 +46,7 @@ extension Connection {
     
     /// Send command without expecting response
     func sendCommand(_ frame: PulsarFrame) async throws {
-        guard await state == .connected else {
+        guard state == .connected else {
             throw PulsarClientError.connectionFailed("Not connected")
         }
         
@@ -289,8 +289,6 @@ struct LookupResponse: ResponseCommand {
             )
         case .failed:
             self.response = .failed(error: lookup.error)
-        default:
-            throw PulsarClientError.protocolError("Unknown lookup response type")
         }
     }
 }
@@ -421,7 +419,7 @@ extension Connection {
         logger.info("Starting connection reconnection")
         
         // Update state to reconnecting
-        await updateState(.reconnecting)
+        updateState(.reconnecting)
         
         try await executeWithFaultTolerance(operation: "reconnect") { [weak self] in
             guard let self = self else {
@@ -451,7 +449,7 @@ extension Connection {
     /// Monitor connection health and handle reconnection
     private func monitorConnectionHealth() async {
         while !Task.isCancelled {
-            let currentState = await state
+            let currentState = state
             
             switch currentState {
             case .connected:
@@ -480,7 +478,7 @@ extension Connection {
         // Send ping every 30 seconds
         try? await Task.sleep(nanoseconds: 30_000_000_000)
         
-        let currentState = await state
+        let currentState = state
         guard currentState == .connected else { return }
         
         do {
@@ -491,7 +489,7 @@ extension Connection {
         } catch {
             logger.warning("Health check ping failed: \(error)")
             // Connection might be dead, trigger reconnection
-            await updateState(.faulted(error))
+            updateState(.faulted(error))
         }
     }
     
@@ -516,7 +514,7 @@ extension Connection {
             
         case .fail:
             logger.error("Connection permanently failed: \(error)")
-            await updateState(.closed)
+            updateState(.closed)
             
         case .rethrow:
             // Keep faulted state, might recover later
@@ -530,7 +528,7 @@ extension Connection {
             try await reconnect()
         } catch {
             logger.error("Automatic reconnection failed: \(error)")
-            await updateState(.faulted(error))
+            updateState(.faulted(error))
             
             // Wait before next attempt
             try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
@@ -539,7 +537,7 @@ extension Connection {
     
     /// Get connection statistics for monitoring
     func getConnectionStats() async -> ConnectionStats {
-        let currentState = await state
+        let currentState = state
         return ConnectionStats(
             state: currentState,
             connectedAt: connectedAt,

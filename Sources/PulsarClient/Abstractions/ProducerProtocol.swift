@@ -1,8 +1,8 @@
 import Foundation
 
 /// Producer interface for sending messages to Pulsar
-public protocol ProducerProtocol<T>: StateHolder, Sendable, HandleException {
-    associatedtype T: Sendable
+public protocol ProducerProtocol<MessageType>: StateHolder, Sendable where MessageType: Sendable, T == ClientState {
+    associatedtype MessageType: Sendable
     
     /// The topic this producer is publishing to
     var topic: String { get }
@@ -11,7 +11,7 @@ public protocol ProducerProtocol<T>: StateHolder, Sendable, HandleException {
     /// - Parameter message: The message to send
     /// - Returns: The message ID assigned by the broker
     @discardableResult
-    func send(_ message: T) async throws -> MessageId
+    func send(_ message: MessageType) async throws -> MessageId
     
     /// Send a message with metadata
     /// - Parameters:
@@ -19,12 +19,12 @@ public protocol ProducerProtocol<T>: StateHolder, Sendable, HandleException {
     ///   - metadata: Message metadata
     /// - Returns: The message ID assigned by the broker
     @discardableResult
-    func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId
+    func send(_ message: MessageType, metadata: MessageMetadata) async throws -> MessageId
     
     /// Send a batch of messages
     /// - Parameter messages: The messages to send
     /// - Returns: The message IDs assigned by the broker
-    func sendBatch(_ messages: [T]) async throws -> [MessageId]
+    func sendBatch(_ messages: [MessageType]) async throws -> [MessageId]
     
     /// Flush any pending messages
     func flush() async throws

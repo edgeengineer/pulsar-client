@@ -13,3 +13,6 @@ DerivedData/
 # Build directories
 Samples/.build/
 **/.build/
+
+# Claude AI
+.claude

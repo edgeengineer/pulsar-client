@@ -75,143 +75,193 @@ public extension ConnectionState {
 /// Default implementation of StateProtocol
 public actor StateContainer<T>: StateProtocol where T: Equatable & Sendable {
     private var state: T
-    private let finalStateChecker: (T) -> Bool
-    private let stream: AsyncStream<T>
-    private let continuation: AsyncStream<T>.Continuation
-    
-    public init(initialState: T, isFinalState: @escaping (T) -> Bool) {
-        self.state = initialState
-        self.finalStateChecker = isFinalState
-        
-        (self.stream, self.continuation) = AsyncStream<T>.makeStream()
-    }
+    private let finalStateChecker: @Sendable (T) -> Bool
+    private var stateChangeContinuations = [UUID: AsyncStream<T>.Continuation]()
     
     public var currentState: T {
-        return state
-    }
-    
-    public func isFinalState() async -> Bool {
-        return finalStateChecker(state)
-    }
-    
-    public func isState(_ state: T) async -> Bool {
-        return self.state == state
-    }
-    
-    public func waitForState(_ targetState: T, timeout: TimeInterval? = nil) async throws {
-        guard state != targetState else { return }
-        
-        let task = Task {
-            for await newState in stream {
-                if newState == targetState {
-                    return
-                }
-            }
-            throw PulsarClientError.timeout("State change timeout")
-        }
-        
-        if let timeout = timeout {
-            try await withTimeout(seconds: timeout) {
-                try await task.value
-            }
-        } else {
-            try await task.value
-        }
-    }
-    
-    public func waitForAnyState(_ states: T..., timeout: TimeInterval? = nil) async throws -> T {
-        if states.contains(state) {
-            return state
-        }
-        
-        let task = Task {
-            for await newState in stream {
-                if states.contains(newState) {
-                    return newState
-                }
-            }
-            throw PulsarClientError.timeout("State change timeout")
-        }
-        
-        if let timeout = timeout {
-            return try await withTimeout(seconds: timeout) {
-                try await task.value
-            }
-        } else {
-            return try await task.value
-        }
-    }
-    
-    public func waitForFinalState(timeout: TimeInterval? = nil) async throws -> T {
-        if finalStateChecker(state) {
-            return state
-        }
-        
-        let task = Task {
-            for await newState in stream {
-                if finalStateChecker(newState) {
-                    return newState
-                }
-            }
-            throw PulsarClientError.timeout("State change timeout")
-        }
-        
-        if let timeout = timeout {
-            return try await withTimeout(seconds: timeout) {
-                try await task.value
-            }
-        } else {
-            return try await task.value
-        }
+        state
     }
     
     public nonisolated var stateChanges: AsyncStream<T> {
-        return stream
-    }
-    
-    /// Update the state (internal use)
-    func updateState(_ newState: T) {
-        guard newState != state else { return }
-        state = newState
-        continuation.yield(newState)
-        
-        if finalStateChecker(newState) {
-            continuation.finish()
+        AsyncStream { continuation in
+            Task { [weak self] in
+                guard let self = self else { return }
+                for await state in await self.stateStream {
+                    continuation.yield(state)
+                }
+                continuation.finish()
+            }
         }
     }
-    
-    deinit {
-        continuation.finish()
+
+    public var stateStream: AsyncStream<T> {
+        AsyncStream { continuation in
+            let id = UUID()
+            stateChangeContinuations[id] = continuation
+            continuation.onTermination = { @Sendable _ in
+                Task {
+                    await self.removeContinuation(id: id)
+                }
+            }
+        }
     }
 
-    func onStateChange(_ handler: @escaping @Sendable (T) -> Void) {
-        Task {
-            for await state in stateChanges {
+    public init(initialState: T, finalStateChecker: @escaping @Sendable (T) -> Bool) {
+        self.state = initialState
+        self.finalStateChecker = finalStateChecker
+    }
+
+    public func updateState(_ newState: T) {
+        state = newState
+        for continuation in stateChangeContinuations.values {
+            continuation.yield(newState)
+            if finalStateChecker(newState) {
+                continuation.finish()
+            }
+        }
+    }
+
+    private func removeContinuation(id: UUID) {
+        stateChangeContinuations.removeValue(forKey: id)
+    }
+
+    public nonisolated func onStateChange(_ handler: @escaping @Sendable (T) -> Void) {
+        Task { [weak self] in
+            guard let self = self else { return }
+            for await state in await self.stateStream {
                 handler(state)
             }
         }
     }
 
-    func handleException(_ error: any Error) {
+    public nonisolated func handleException(_ error: any Error) {
         // Implementation needed
     }
 
-    func stateChangedTo(_ state: T, timeout: TimeInterval) async throws -> T {
+    public func stateChangedTo(_ state: T, timeout: TimeInterval) async throws -> T {
         if self.state == state {
             return self.state
         }
-        return try await stateChanges.first { $0 == state }.async(timeout: timeout) ?? self.state
+        // Wait for state change with timeout
+        return try await withTimeout(seconds: timeout) { [self] in
+            for await currentState in await self.stateStream {
+                if currentState == state {
+                    return currentState
+                }
+            }
+            return await self.state
+        }
     }
 
-    func stateChangedFrom(_ state: T, timeout: TimeInterval) async throws -> T {
+    public func stateChangedFrom(_ state: T, timeout: TimeInterval) async throws -> T {
         if self.state != state {
             return self.state
         }
-        return try await stateChanges.first { $0 != state }.async(timeout: timeout) ?? self.state
+        // Wait for state change with timeout
+        return try await withTimeout(seconds: timeout) { [self] in
+            for await currentState in await self.stateStream {
+                if currentState != state {
+                    return currentState
+                }
+            }
+            return await self.state
+        }
+    }
+    
+    public func isFinalState() async -> Bool {
+        finalStateChecker(state)
+    }
+    
+    public func isState(_ state: T) async -> Bool {
+        self.state == state
+    }
+    
+    public func waitForState(_ state: T, timeout: TimeInterval?) async throws {
+        guard self.state != state else { return }
+        
+        let timeoutValue = timeout ?? 30.0
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutValue * 1_000_000_000))
+                throw PulsarClientError.timeout("Timeout waiting for state \(state)")
+            }
+            
+            group.addTask { [self] in
+                for await currentState in await self.stateStream {
+                    if currentState == state {
+                        return
+                    }
+                }
+            }
+            
+            try await group.next()
+            group.cancelAll()
+        }
+    }
+    
+    public func waitForAnyState(_ states: T..., timeout: TimeInterval?) async throws -> T {
+        if states.contains(state) {
+            return state
+        }
+        
+        let timeoutValue = timeout ?? 30.0
+        return try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutValue * 1_000_000_000))
+                return nil
+            }
+            
+            group.addTask { [self] in
+                for await currentState in await self.stateStream {
+                    if states.contains(currentState) {
+                        return currentState
+                    }
+                }
+                return nil
+            }
+            
+            if let result = try await group.next(), let state = result {
+                group.cancelAll()
+                return state
+            } else {
+                throw PulsarClientError.timeout("Timeout waiting for any of states: \(states)")
+            }
+        }
+    }
+    
+    public func waitForFinalState(timeout: TimeInterval?) async throws -> T {
+        if finalStateChecker(state) {
+            return state
+        }
+        
+        let timeoutValue = timeout ?? 30.0
+        return try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutValue * 1_000_000_000))
+                return nil
+            }
+            
+            group.addTask { [self] in
+                for await currentState in await self.stateStream {
+                    if self.finalStateChecker(currentState) {
+                        return currentState
+                    }
+                }
+                return nil
+            }
+            
+            if let result = try await group.next(), let state = result {
+                group.cancelAll()
+                return state
+            } else {
+                throw PulsarClientError.timeout("Timeout waiting for final state")
+            }
+        }
     }
 }
 
-public protocol StateHolder: Sendable where T: Equatable & Sendable {
+public protocol StateHolder: Sendable {
+    associatedtype T: Equatable & Sendable
     var state: T { get }
     var stateStream: AsyncStream<T> { get }
 

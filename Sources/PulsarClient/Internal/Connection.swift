@@ -49,6 +49,8 @@ actor Connection: PulsarConnection {
     private let eventLoopGroup: EventLoopGroup
     private var channel: NIOCore.Channel?
     internal var commandBuilder = PulsarCommandBuilder()
+    private let authentication: Authentication?
+    private let encryptionPolicy: EncryptionPolicy
     
     private var _state: ConnectionState = .disconnected
     private let stateStream: AsyncStream<ConnectionState>
@@ -68,10 +70,12 @@ actor Connection: PulsarConnection {
     var state: ConnectionState { _state }
     var stateChanges: AsyncStream<ConnectionState> { stateStream }
     
-    init(url: PulsarURL, eventLoopGroup: EventLoopGroup, logger: Logger) {
+    init(url: PulsarURL, eventLoopGroup: EventLoopGroup, logger: Logger, authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted) {
         self.url = url
         self.eventLoopGroup = eventLoopGroup
         self.logger = logger
+        self.authentication = authentication
+        self.encryptionPolicy = encryptionPolicy
         self.channelManager = ChannelManager(logger: logger)
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ConnectionState>.makeStream()
@@ -91,6 +95,15 @@ actor Connection: PulsarConnection {
             throw PulsarClientError.connectionFailed("Already connected or connecting")
         }
         
+        // Validate encryption policy
+        if encryptionPolicy.isEncryptionRequired && !url.isSSL {
+            throw PulsarClientError.connectionFailed("Encryption is required by policy but URL is not SSL: \(url)")
+        }
+        
+        if encryptionPolicy == .enforceUnencrypted && url.isSSL {
+            throw PulsarClientError.connectionFailed("Unencrypted connection is required by policy but URL is SSL: \(url)")
+        }
+        
         updateState(.connecting)
         
         do {
@@ -107,8 +120,17 @@ actor Connection: PulsarConnection {
             let channel = try await bootstrap.connect(to: url.socketAddress).get()
             self.channel = channel
             
-            // Send CONNECT command
-            let connectCommand = commandBuilder.connect()
+            // Send CONNECT command with authentication if provided
+            let connectCommand: Pulsar_Proto_BaseCommand
+            if let auth = authentication {
+                let authData = try await auth.getAuthenticationData()
+                connectCommand = commandBuilder.connect(
+                    authMethodName: auth.authenticationMethodName,
+                    authData: authData
+                )
+            } else {
+                connectCommand = commandBuilder.connect()
+            }
             let frame = PulsarFrame(command: connectCommand)
             try await sendFrame(frame)
             

@@ -70,15 +70,3 @@ public enum ClientState: Sendable, Equatable {
         }
     }
 }
-
-/// State holder protocol
-public protocol StateHolder: Sendable {
-    /// Current state
-    var state: ClientState { get async }
-    
-    /// State change notifications
-    var stateChanges: AsyncStream<ClientState> { get }
-    
-    /// Check if the component is in a connected state
-    var isConnected: Bool { get async }
-}

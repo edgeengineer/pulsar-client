@@ -1,18 +1,6 @@
 import Foundation
 import Logging
 
-/// Actions to take when an exception occurs during an operation
-public enum FaultAction: Sendable {
-    /// Rethrow the original exception
-    case rethrow
-    /// Retry the operation after a delay
-    case retry
-    /// Retry with a custom delay
-    case retryAfter(TimeInterval)
-    /// Fail permanently (don't retry)
-    case fail
-}
-
 /// Context for exception handling
 public struct ExceptionContext {
     let exception: Error
@@ -56,11 +44,6 @@ public struct DefaultExceptionHandler: ExceptionHandler {
         // Handle PulsarClientError cases
         if let pulsarError = error as? PulsarClientError {
             return handlePulsarError(pulsarError, attempt: attempt)
-        }
-        
-        // Handle system errors
-        if let nsError = error as? NSError {
-            return handleSystemError(nsError, attempt: attempt)
         }
         
         // Handle other Swift errors
@@ -147,55 +130,50 @@ public struct DefaultExceptionHandler: ExceptionHandler {
         }
     }
     
-    private func handleSystemError(_ error: NSError, attempt: Int) -> FaultAction {
-        switch error.domain {
-        case NSURLErrorDomain:
-            return handleURLError(error, attempt: attempt)
-        case NSPOSIXErrorDomain:
-            return handlePOSIXError(error, attempt: attempt)
-        default:
-            return .retryAfter(calculateBackoffDelay(attempt: attempt, baseDelay: 1.0))
-        }
-    }
-    
-    private func handleURLError(_ error: NSError, attempt: Int) -> FaultAction {
-        switch error.code {
-        // Network errors that might recover
-        case NSURLErrorTimedOut,
-             NSURLErrorCannotFindHost,
-             NSURLErrorCannotConnectToHost,
-             NSURLErrorNetworkConnectionLost,
-             NSURLErrorNotConnectedToInternet:
+    private func handleNetworkError(_ error: Error, attempt: Int) -> FaultAction {
+        // For cross-platform compatibility, we handle network errors generically
+        // instead of relying on platform-specific error codes
+        let errorString = String(describing: error).lowercased()
+        
+        // Check for common network error patterns
+        if errorString.contains("timeout") ||
+           errorString.contains("timed out") {
             return .retryAfter(calculateBackoffDelay(attempt: attempt, baseDelay: 2.0))
-            
-        // DNS errors that are usually permanent
-        case NSURLErrorDNSLookupFailed:
-            return attempt < 3 ? .retryAfter(5.0) : .fail
-            
-        // Other network errors
-        default:
+        }
+        
+        if errorString.contains("connection refused") ||
+           errorString.contains("connection reset") ||
+           errorString.contains("connection lost") {
             return .retryAfter(calculateBackoffDelay(attempt: attempt, baseDelay: 1.0))
         }
-    }
-    
-    private func handlePOSIXError(_ error: NSError, attempt: Int) -> FaultAction {
-        switch error.code {
-        // Connection errors
-        case Int(ECONNREFUSED), Int(ECONNRESET), Int(ECONNABORTED):
-            return .retryAfter(calculateBackoffDelay(attempt: attempt, baseDelay: 1.0))
-        // Host unreachable
-        case Int(EHOSTUNREACH), Int(ENETUNREACH):
+        
+        if errorString.contains("host not found") ||
+           errorString.contains("host unreachable") ||
+           errorString.contains("network unreachable") {
             return attempt < 3 ? .retryAfter(5.0) : .fail
-        // Other POSIX errors
-        default:
-            return .retryAfter(calculateBackoffDelay(attempt: attempt, baseDelay: 1.0))
         }
+        
+        if errorString.contains("dns") && errorString.contains("fail") {
+            return attempt < 3 ? .retryAfter(5.0) : .fail
+        }
+        
+        // Default network error handling
+        return .retryAfter(calculateBackoffDelay(attempt: attempt, baseDelay: 1.0))
     }
     
     private func handleGenericError(_ error: Error, attempt: Int) -> FaultAction {
         // For cancellation errors, check if it's user-initiated
         if error is CancellationError {
             return .fail // Don't retry cancelled operations
+        }
+        
+        // Check if it looks like a network error based on error description
+        let errorString = String(describing: error).lowercased()
+        if errorString.contains("network") || 
+           errorString.contains("connection") ||
+           errorString.contains("socket") ||
+           errorString.contains("host") {
+            return handleNetworkError(error, attempt: attempt)
         }
         
         // Default: retry with backoff

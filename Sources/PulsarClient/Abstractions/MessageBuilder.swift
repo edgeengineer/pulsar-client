@@ -165,7 +165,7 @@ public struct MessageBuilder<T>: MessageBuilderProtocol where T: Sendable {
 /// Extension to ProducerProtocol to provide message builder
 public extension ProducerProtocol {
     /// Create a new message builder
-    func newMessage() -> MessageBuilder<T> {
+    func newMessage() -> MessageBuilder<MessageType> {
         return MessageBuilder(producer: self)
     }
 }

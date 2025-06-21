@@ -13,6 +13,9 @@
  */
 
 import Foundation
+#if canImport(RegexBuilder)
+import RegexBuilder
+#endif
 
 /// The consumer building options.
 public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
@@ -58,7 +61,7 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
     public let topics: [String]
     
     /// Specify a pattern for topics that this consumer subscribes to.
-    public let topicsPattern: NSRegularExpression?
+    public let topicsPattern: String?
     
     // MARK: - Optional Properties
     
@@ -122,6 +125,9 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
     /// Maximum pending chunked messages. Default is 10.
     public var maxPendingChunkedMessage: Int
     
+    /// Receiver queue size. Default is 1000.
+    public var receiverQueueSize: Int
+    
     // MARK: - Initialization
     
     /// Initializes a new instance using the specified subscription name, topic and schema.
@@ -150,6 +156,7 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.cryptoKeyReader = nil
         self.patternAutoDiscoveryPeriod = 60.0
         self.maxPendingChunkedMessage = 10
+        self.receiverQueueSize = 1000
     }
     
     /// Initializes a new instance using the specified subscription name, topics and schema.
@@ -178,10 +185,11 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.cryptoKeyReader = nil
         self.patternAutoDiscoveryPeriod = 60.0
         self.maxPendingChunkedMessage = 10
+        self.receiverQueueSize = 1000
     }
     
     /// Initializes a new instance using the specified subscription name, topics pattern and schema.
-    public init(subscriptionName: String, topicsPattern: NSRegularExpression, schema: Schema<TMessage>) {
+    public init(subscriptionName: String, topicsPattern: String, schema: Schema<TMessage>) {
         self.subscriptionName = subscriptionName
         self.topic = ""
         self.topics = []
@@ -206,6 +214,7 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.cryptoKeyReader = nil
         self.patternAutoDiscoveryPeriod = 60.0
         self.maxPendingChunkedMessage = 10
+        self.receiverQueueSize = 1000
     }
     
     // MARK: - Validation
@@ -404,6 +413,13 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
     public func withMaxPendingChunkedMessage(_ count: Int) -> ConsumerOptions {
         var copy = self
         copy.maxPendingChunkedMessage = count
+        return copy
+    }
+    
+    /// Returns a new ConsumerOptions with receiver queue size set
+    public func withReceiverQueueSize(_ size: Int) -> ConsumerOptions {
+        var copy = self
+        copy.receiverQueueSize = size
         return copy
     }
 }

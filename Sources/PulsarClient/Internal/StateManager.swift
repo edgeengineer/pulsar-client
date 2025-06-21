@@ -52,18 +52,18 @@ public actor StateManager<State: Equatable & Sendable> {
         guard currentState != targetState else { return }
         
         let listener = StateWaiter(targetState: targetState)
-        await addListener(listener)
+        addListener(listener)
         
         do {
             try await withTimeout(seconds: timeout) {
                 try await listener.wait()
             }
         } catch {
-            await removeListener(listener)
+            removeListener(listener)
             throw error
         }
         
-        await removeListener(listener)
+        removeListener(listener)
     }
     
     /// Wait for any of the specified states
@@ -71,17 +71,17 @@ public actor StateManager<State: Equatable & Sendable> {
         guard !states.contains(currentState) else { return currentState }
         
         let listener = StateWaiter(targetStates: states)
-        await addListener(listener)
+        addListener(listener)
         
         do {
             try await withTimeout(seconds: timeout) {
                 try await listener.wait()
             }
             let result = currentState
-            await removeListener(listener)
+            removeListener(listener)
             return result
         } catch {
-            await removeListener(listener)
+            removeListener(listener)
             throw error
         }
     }
@@ -201,7 +201,7 @@ public actor StateChangeNotifier {
     /// Notify all global listeners of a state change
     public func notify<State>(_ change: StateChange<State>) {
         for listener in globalListeners {
-            if let typedListener = listener as? StateListener<State> {
+            if let typedListener = listener as? any StateListener<State> {
                 Task {
                     await typedListener.onStateChange(change)
                 }

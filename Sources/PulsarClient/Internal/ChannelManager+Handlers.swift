@@ -102,7 +102,7 @@ extension ProducerChannel {
             logger.info("Successfully reconnected producer \(id) for topic \(topic)")
         } catch {
             logger.error("Failed to reconnect producer \(id): \(error)")
-            await updateState(.closed)
+            updateState(.closed)
         }
     }
     
@@ -179,7 +179,7 @@ extension ConsumerChannel {
             logger.info("Successfully reconnected consumer \(id) for topic \(topic), subscription \(subscription)")
         } catch {
             logger.error("Failed to reconnect consumer \(id): \(error)")
-            await updateState(.closed)
+            updateState(.closed)
         }
     }
     

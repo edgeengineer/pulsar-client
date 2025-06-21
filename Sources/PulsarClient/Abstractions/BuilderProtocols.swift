@@ -41,7 +41,7 @@ public protocol ProducerBuilderProtocol: Sendable {
     func withBatchingMaxBytes(_ bytes: UInt) -> Self
     func withCryptoKeyReader(_ reader: CryptoKeyReader) -> Self
     func withEncryptionKeys(_ keys: [String]) -> Self
-    func build() async throws -> ProducerProtocol
+    func build() async throws -> any ProducerProtocol
 }
 
 /// A protocol for building a Pulsar consumer.
@@ -57,7 +57,7 @@ public protocol ConsumerBuilderProtocol: Sendable {
     func withReceiverQueueSize(_ size: Int) -> Self
     func withReadCompacted(_ enabled: Bool) -> Self
     func withPriorityLevel(_ level: Int) -> Self
-    func build() async throws -> ConsumerProtocol
+    func build() async throws -> any ConsumerProtocol
 }
 
 /// A protocol for building a Pulsar reader.
@@ -70,7 +70,7 @@ public protocol ReaderBuilderProtocol: Sendable {
     func withStartMessageFromRollbackDuration(_ duration: TimeInterval) -> Self
     func withReceiverQueueSize(_ size: Int) -> Self
     func withReadCompacted(_ enabled: Bool) -> Self
-    func build() async throws -> ReaderProtocol
+    func build() async throws -> any ReaderProtocol
 }
 
 /// A helper protocol for common builder properties.

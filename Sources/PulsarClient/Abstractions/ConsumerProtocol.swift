@@ -1,8 +1,8 @@
 import Foundation
 
 /// Consumer interface for receiving messages from Pulsar
-public protocol ConsumerProtocol<T>: StateHolder, Sendable {
-    associatedtype T: Sendable
+public protocol ConsumerProtocol<MessageType>: StateHolder, Sendable where MessageType: Sendable, T == ClientState {
+    associatedtype MessageType: Sendable
     
     /// The topic(s) this consumer is subscribed to
     var topics: [String] { get }
@@ -12,28 +12,28 @@ public protocol ConsumerProtocol<T>: StateHolder, Sendable {
     
     /// Receive a single message
     /// - Returns: The received message
-    func receive() async throws -> Message<T>
+    func receive() async throws -> Message<MessageType>
     
     /// Receive a batch of messages
     /// - Parameter maxMessages: Maximum number of messages to receive
     /// - Returns: The received messages
-    func receiveBatch(maxMessages: Int) async throws -> [Message<T>]
+    func receiveBatch(maxMessages: Int) async throws -> [Message<MessageType>]
     
     /// Acknowledge a message
     /// - Parameter message: The message to acknowledge
-    func acknowledge(_ message: Message<T>) async throws
+    func acknowledge(_ message: Message<MessageType>) async throws
     
     /// Acknowledge messages cumulatively up to and including the given message
     /// - Parameter message: The message to acknowledge cumulatively
-    func acknowledgeCumulative(_ message: Message<T>) async throws
+    func acknowledgeCumulative(_ message: Message<MessageType>) async throws
     
     /// Acknowledge multiple messages
     /// - Parameter messages: The messages to acknowledge
-    func acknowledgeBatch(_ messages: [Message<T>]) async throws
+    func acknowledgeBatch(_ messages: [Message<MessageType>]) async throws
     
     /// Negative acknowledge a message for redelivery
     /// - Parameter message: The message to negative acknowledge
-    func negativeAcknowledge(_ message: Message<T>) async throws
+    func negativeAcknowledge(_ message: Message<MessageType>) async throws
     
     /// Seek to a specific message ID
     /// - Parameter messageId: The message ID to seek to

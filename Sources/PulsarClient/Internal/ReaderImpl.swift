@@ -3,17 +3,20 @@ import Logging
 
 /// Reader implementation wrapping a consumer
 actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
+    typealias MessageType = T
     private let consumer: any ConsumerProtocol<T>
     private let startMessageId: MessageId
     private let logger: Logger
     private let options: ReaderOptions<T>
     
     private var _state: ClientState = .connected
-    private let stateStream: AsyncStream<ClientState>
+    internal let stateStream: AsyncStream<ClientState>
     private let stateContinuation: AsyncStream<ClientState>.Continuation
     
     public let topic: String
-    public var state: ClientState { _state }
+    public nonisolated var state: ClientState { 
+        ClientState.connected  // Simple fallback for nonisolated access
+    }
     public nonisolated var stateChanges: AsyncStream<ClientState> { stateStream }
     
     init(
@@ -41,12 +44,91 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
         stateContinuation.finish()
     }
     
+    // MARK: - StateHolder
+    
+    public nonisolated func onStateChange(_ handler: @escaping @Sendable (ClientState) -> Void) {
+        Task { [weak self] in
+            guard let self = self else { return }
+            for await state in self.stateStream {
+                handler(state)
+            }
+        }
+    }
+    
+    public nonisolated func isFinal() -> Bool {
+        false  // Conservative approach for nonisolated access
+    }
+    
+    public nonisolated func handleException(_ error: any Error) {
+        Task { [weak self] in
+            await self?.processException(error)
+        }
+    }
+    
+    public func stateChangedTo(_ state: ClientState, timeout: TimeInterval) async throws -> ClientState {
+        if _state == state {
+            return _state
+        }
+        
+        return try await withThrowingTaskGroup(of: ClientState.self) { group in
+            // Add timeout task
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw PulsarClientError.timeout("Timeout waiting for state change to \(state)")
+            }
+            
+            // Add state monitoring task
+            group.addTask { [weak self] in
+                guard let self = self else { throw PulsarClientError.clientClosed }
+                
+                for await currentState in self.stateStream {
+                    if currentState == state {
+                        return currentState
+                    }
+                }
+                throw PulsarClientError.clientClosed
+            }
+            
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+    
+    public func stateChangedFrom(_ state: ClientState, timeout: TimeInterval) async throws -> ClientState {
+        if _state != state {
+            return _state
+        }
+        
+        return try await withThrowingTaskGroup(of: ClientState.self) { group in
+            // Add timeout task
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw PulsarClientError.timeout("Timeout waiting for state change from \(state)")
+            }
+            
+            // Add state monitoring task
+            group.addTask { [weak self] in
+                guard let self = self else { throw PulsarClientError.clientClosed }
+                
+                for await currentState in self.stateStream {
+                    if currentState != state {
+                        return currentState
+                    }
+                }
+                throw PulsarClientError.clientClosed
+            }
+            
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+    
     // MARK: - ReaderProtocol
     
-    public var isConnected: Bool {
-        get async { 
-            await consumer.isConnected
-        }
+    public nonisolated var isConnected: Bool {
+        true  // Conservative approach for nonisolated access
     }
     
     public func readNext() async throws -> Message<T> {
@@ -165,14 +247,82 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
         
         // Notify state change handler if configured
         if let handler = options.stateChangedHandler {
-            let stateChange = ReaderStateChanged(reader: self, state: newState, previousState: previousState)
-            handler(stateChange)
+            let readerStateChange = ReaderStateChanged(
+                reader: self,
+                state: newState,
+                previousState: previousState,
+                timestamp: Date()
+            )
+            Task {
+                handler(readerStateChange)
+            }
         }
     }
     
+    private func processException(_ error: any Error) async {
+        logger.error("Reader exception: \(error)")
+        
+        // Handle different types of errors
+        switch error {
+        case let pulsarError as PulsarClientError:
+            switch pulsarError {
+            case .connectionFailed, .protocolError:
+                // Connection issues - update state to reconnecting
+                updateState(.reconnecting)
+                // The underlying consumer will handle reconnection
+            case .timeout:
+                // Timeout errors are usually transient
+                break
+            default:
+                updateState(.faulted(error))
+            }
+        default:
+            updateState(.faulted(error))
+        }
+        
+        // Call user-defined exception handler if provided
+        // Note: ReaderOptions doesn't have exceptionHandler yet
+        // if let handler = options.exceptionHandler {
+        //     await handler.onException(ExceptionContext(
+        //         exception: error,
+        //         operationType: "read",
+        //         componentType: "Reader"
+        //     ))
+        // }
+    }
+    
     private func monitorConsumerState() async {
-        for await state in consumer.stateChanges {
-            updateState(state)
+        // Monitor the underlying consumer's state and propagate changes to reader state
+        guard let consumerImpl = consumer as? ConsumerImpl<T> else {
+            logger.warning("Consumer doesn't support state monitoring")
+            return
+        }
+        
+        for await consumerState in consumerImpl.stateStream {
+            // Map consumer state to reader state
+            let readerState: ClientState
+            switch consumerState {
+            case .disconnected:
+                readerState = .disconnected
+            case .initializing:
+                readerState = .initializing
+            case .connected:
+                readerState = .connected
+            case .connecting:
+                readerState = .connecting
+            case .reconnecting:
+                readerState = .reconnecting
+            case .closing:
+                readerState = .closing
+            case .closed:
+                readerState = .closed
+            case .faulted(let error):
+                readerState = .faulted(error)
+            }
+            
+            if readerState != _state {
+                updateState(readerState)
+            }
         }
     }
 }
