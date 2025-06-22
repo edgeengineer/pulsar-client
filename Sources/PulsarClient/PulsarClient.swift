@@ -63,7 +63,10 @@ public final class PulsarClient: PulsarClientProtocol {
         get {
             Self.implementationsLock.lock()
             defer { Self.implementationsLock.unlock() }
-            return Self.implementations[ObjectIdentifier(self)]!
+            guard let impl = Self.implementations[ObjectIdentifier(self)] else {
+                fatalError("PulsarClient implementation not initialized. Use PulsarClientBuilder to create clients.")
+            }
+            return impl
         }
         set {
             Self.implementationsLock.lock()
@@ -107,8 +110,19 @@ public final class PulsarClient: PulsarClientProtocol {
     
     /// Get client statistics
     public func getStatistics() async -> ClientStatistics {
-        let poolStats = await implementation.connectionPool.getStatistics()
-        let (producers, consumers, _, _, baseMemory) = await implementation.tracker.getStatistics()
+        guard let impl = Self.implementations[ObjectIdentifier(self)] else {
+            // Return empty statistics if disposed
+            return ClientStatistics(
+                activeConnections: 0,
+                totalConnections: 0,
+                activeProducers: 0,
+                activeConsumers: 0,
+                memoryUsage: 0
+            )
+        }
+        
+        let poolStats = await impl.connectionPool.getStatistics()
+        let (producers, consumers, _, _, baseMemory) = await impl.tracker.getStatistics()
         
         // Calculate total memory usage including connections
         let connectionMemory = Int64(poolStats.totalConnections) * 200 * 1024 // 200KB per connection
@@ -125,17 +139,23 @@ public final class PulsarClient: PulsarClientProtocol {
     
     /// Enhanced dispose with cleanup
     public func dispose() async {
-        implementation.logger.info("Disposing PulsarClient")
+        // Get implementation before any cleanup
+        guard let impl = Self.implementations[ObjectIdentifier(self)] else {
+            // Already disposed
+            return
+        }
+        
+        impl.logger.info("Disposing PulsarClient")
         
         // Close all connections
-        await implementation.connectionPool.close()
+        await impl.connectionPool.close()
         
         // Shutdown event loop group if we created it
-        if let group = implementation.eventLoopGroup as? MultiThreadedEventLoopGroup {
+        if let group = impl.eventLoopGroup as? MultiThreadedEventLoopGroup {
             do {
                 try await group.shutdownGracefully()
             } catch {
-                implementation.logger.error("Error shutting down event loop group: \(error)")
+                impl.logger.error("Error shutting down event loop group: \(error)")
             }
         }
         
@@ -147,7 +167,7 @@ public final class PulsarClient: PulsarClientProtocol {
             continuation.resume()
         }
         
-        implementation.logger.info("PulsarClient disposed")
+        impl.logger.info("PulsarClient disposed")
     }
     
     // MARK: - PulsarClientProtocol Implementation
@@ -191,11 +211,30 @@ public final class PulsarClient: PulsarClientProtocol {
         try options.validate()
         
         // Get connection for the topic
-        let connection = try await implementation.connectionPool.getConnection(for: options.topic)
+        let connection = try await implementation.connectionPool.getConnectionForTopic(options.topic)
         
-        // Create producer
-        let producerId = UInt64.random(in: 1...UInt64.max)
+        // Create producer on the server
+        let (producerId, _) = try await connection.createProducer(
+            topic: options.topic,
+            producerName: options.producerName,
+            schema: nil,
+            producerAccessMode: .shared,
+            producerProperties: [:]
+        )
+        
         let channelManager = await connection.channelManager ?? ChannelManager()
+        
+        // Create producer channel and register it
+        let producerChannel = ProducerChannel(
+            id: producerId,
+            topic: options.topic,
+            producerName: options.producerName,
+            connection: connection,
+            schemaInfo: nil
+        )
+        await channelManager.registerProducer(producerChannel)
+        await producerChannel.activate()
+        
         let producer = ProducerImpl<T>(
             id: producerId,
             topic: options.topic,
@@ -208,6 +247,9 @@ public final class PulsarClient: PulsarClientProtocol {
             tracker: implementation.tracker
         )
         
+        // Start batch sender if batching is enabled
+        await producer.startBatchSender()
+        
         // Register with tracker
         await implementation.tracker.registerProducer(producer, topic: options.topic)
         
@@ -218,11 +260,40 @@ public final class PulsarClient: PulsarClientProtocol {
         try options.validate()
         
         // Get connection for the topic
-        let connection = try await implementation.connectionPool.getConnection(for: options.topic)
-        
-        // Create consumer
-        let consumerId = UInt64.random(in: 1...UInt64.max)
+        let connection = try await implementation.connectionPool.getConnectionForTopic(options.topic)
         let channelManager = await connection.channelManager ?? ChannelManager()
+        
+        // CRITICAL: Pre-allocate consumer ID and register channel BEFORE sending SUBSCRIBE
+        // This matches the C# DotPulsar implementation pattern
+        let consumerId = await connection.commandBuilder.nextConsumerId()
+        
+        // Create consumer channel and register it BEFORE subscribing
+        let consumerChannel = ConsumerChannel(
+            id: consumerId,
+            topic: options.topic,
+            subscription: options.subscriptionName,
+            consumerName: options.consumerName,
+            connection: connection
+        )
+        await channelManager.registerConsumer(consumerChannel)
+        
+        // Subscribe to the topic on the server (now that channel is ready)
+        let (actualConsumerId, _) = try await connection.subscribe(
+            topic: options.topic,
+            subscription: options.subscriptionName,
+            subType: options.subscriptionType,
+            consumerName: options.consumerName,
+            initialPosition: options.initialPosition,
+            schema: nil,
+            preAssignedConsumerId: consumerId  // Use our pre-assigned ID
+        )
+        
+        // Verify the IDs match (they should since we pre-assigned)
+        assert(actualConsumerId == consumerId, "Consumer ID mismatch: expected \(consumerId), got \(actualConsumerId)")
+        
+        // Activate channel immediately after successful SUBSCRIBE (like C# implementation)
+        await consumerChannel.activate()
+        
         let consumer = ConsumerImpl<T>(
             id: consumerId,
             topics: options.topic.isEmpty ? options.topics : [options.topic],
@@ -235,11 +306,17 @@ public final class PulsarClient: PulsarClientProtocol {
             tracker: implementation.tracker
         )
         
+        // Set up message handler to route messages from channel to consumer
+        await consumerChannel.setMessageHandler { [weak consumer] commandMessage, payload, metadata in
+            guard let consumer = consumer else { return }
+            await consumer.handleIncomingMessage(commandMessage, payload: payload, metadata: metadata)
+        }
+        
         // Start the consumer's receiver task
         await consumer.startReceiver()
         
         // Register with tracker
-        await implementation.tracker.registerConsumer(consumer, topic: options.topic)
+        await implementation.tracker.registerConsumer(consumer as ConsumerImpl<T>, topic: options.topic)
         
         return consumer
     }
@@ -280,6 +357,9 @@ public final class PulsarClientBuilder {
     internal var logger: Logger = Logger(label: "PulsarClient")
     internal var authentication: Authentication?
     internal var encryptionPolicy: EncryptionPolicy = .preferUnencrypted
+    
+    /// Initialize a new PulsarClientBuilder
+    public init() {}
     
     /// Set the service URL
     /// - Parameter url: The Pulsar service URL

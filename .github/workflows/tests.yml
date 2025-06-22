@@ -1,0 +1,125 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        swift: ['6.1']
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: ${{ matrix.swift }}
+    
+    - name: Run Unit Tests
+      run: swift test --filter PulsarClientTests
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      pulsar:
+        image: apachepulsar/pulsar:3.2.0
+        ports:
+          - 6650:6650
+          - 8080:8080
+        options: >-
+          --health-cmd "bin/pulsar-admin brokers healthcheck"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: '6.1'
+    
+    - name: Wait for Pulsar
+      run: |
+        until curl -s http://localhost:8080/admin/v2/brokers/health; do
+          echo "Waiting for Pulsar..."
+          sleep 5
+        done
+    
+    - name: Run Integration Tests
+      env:
+        PULSAR_SERVICE_URL: pulsar://localhost:6650
+        PULSAR_ADMIN_URL: http://localhost:8080
+      run: swift test --filter IntegrationTests
+
+  integration-tests-auth:
+    name: Integration Tests with Authentication
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: '6.1'
+    
+    - name: Start Pulsar with Auth
+      run: |
+        docker-compose -f docker/docker-compose.auth.yml up -d
+        ./scripts/test-env.sh wait --timeout 120
+    
+    - name: Get Auth Token
+      id: auth
+      run: |
+        TOKEN=$(docker exec pulsar-auth cat /pulsar/conf/client.token)
+        echo "token=$TOKEN" >> $GITHUB_OUTPUT
+    
+    - name: Run Integration Tests
+      env:
+        PULSAR_SERVICE_URL: pulsar://localhost:6651
+        PULSAR_ADMIN_URL: http://localhost:8081
+        PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+      run: swift test --filter IntegrationTests
+    
+    - name: Cleanup
+      if: always()
+      run: docker-compose -f docker/docker-compose.auth.yml down -v
+
+  integration-tests-cluster:
+    name: Integration Tests with Cluster
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: '6.1'
+    
+    - name: Start Pulsar Cluster
+      run: |
+        docker-compose -f docker/docker-compose.cluster.yml up -d
+        ./scripts/test-env.sh wait --cluster --timeout 180
+    
+    - name: Run Integration Tests
+      env:
+        PULSAR_SERVICE_URL: pulsar://localhost:6650
+        PULSAR_ADMIN_URL: http://localhost:8080
+      run: swift test --filter IntegrationTests
+    
+    - name: Cleanup
+      if: always()
+      run: docker-compose -f docker/docker-compose.cluster.yml down -v

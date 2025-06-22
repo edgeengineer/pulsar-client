@@ -8,7 +8,7 @@ import Logging
 /// Enhanced connection implementation with full request/response correlation
 extension Connection {
     
-    /// Send a command and wait for response
+    /// Send a command and wait for response (with proper sequencing to prevent race conditions)
     func sendRequest<Response>(_ frame: PulsarFrame, responseType: Response.Type) async throws -> Response where Response: ResponseCommand {
         guard state == .connected else {
             throw PulsarClientError.connectionFailed("Not connected")
@@ -18,26 +18,44 @@ extension Connection {
             throw PulsarClientError.protocolError("Command missing request ID")
         }
         
+        logger.info("Sending request with ID: \(requestId), type: \(frame.command.type)")
+        
         // Create continuation for response
         let responseContinuation = AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.makeStream()
+        
+        // Register the response handler BEFORE sending (critical for preventing race conditions)
         pendingRequests[requestId] = responseContinuation.continuation
+        logger.info("Registered response handler for request ID: \(requestId)")
         
         defer {
+            logger.info("Cleaning up request ID: \(requestId)")
             pendingRequests.removeValue(forKey: requestId)
             responseContinuation.continuation.finish()
         }
         
-        // Send the request
-        try await sendFrame(frame)
+        do {
+            // Send the frame after handler is safely registered
+            try await sendFrame(frame)
+            logger.info("Frame sent for request ID: \(requestId)")
+        } catch {
+            // If send fails, clean up immediately and rethrow
+            logger.error("Failed to send frame for request ID: \(requestId): \(error)")
+            throw error
+        }
         
         // Wait for response with timeout
-        let response = try await withTimeout(seconds: 30) {
+        let response = try await withTimeout(seconds: 30) { [logger] in
+            logger.info("Waiting for response to request ID: \(requestId)")
             for try await command in responseContinuation.stream {
+                logger.info("Received command: \(command.type) for request ID: \(requestId)")
                 if let response = try? Response(from: command) {
+                    logger.info("Successfully parsed response for request ID: \(requestId)")
                     return response
                 }
+                logger.warning("Failed to parse response as \(Response.self) for request ID: \(requestId)")
                 throw PulsarClientError.protocolError("Unexpected response type")
             }
+            logger.error("No response received for request ID: \(requestId)")
             throw PulsarClientError.protocolError("No response received")
         }
         
@@ -60,9 +78,12 @@ extension Connection {
     
     /// Handle incoming commands (enhanced version)
     private func handleIncomingCommand(_ command: Pulsar_Proto_BaseCommand, frame: PulsarFrame) {
+        logger.debug("Processing incoming command: \(command.type)")
+        
         // First check if this is a response to a pending request
         if let requestId = getResponseRequestId(from: command),
            let continuation = pendingRequests.removeValue(forKey: requestId) {
+            logger.info("Found matching request for ID: \(requestId), command type: \(command.type)")
             continuation.yield(command)
             continuation.finish()
             return
@@ -70,26 +91,47 @@ extension Connection {
         
         // Handle server-initiated commands
         switch command.type {
+        case .connected:
+            logger.info("Received CONNECTED command")
+            // This will be handled by the background processing task
+            // Since this extension is for Connection actor, we can't directly access the continuation here
+            
         case .ping:
+            logger.debug("Handling PING")
             handlePing()
             
         case .message:
+            logger.debug("Handling MESSAGE")
             handleMessage(command.message, frame: frame)
             
         case .sendReceipt:
+            logger.info("Handling SEND_RECEIPT - producerID: \(command.sendReceipt.producerID), sequenceID: \(command.sendReceipt.sequenceID)")
             handleSendReceipt(command.sendReceipt)
             
         case .activeConsumerChange:
+            logger.debug("Handling ACTIVE_CONSUMER_CHANGE")
             handleActiveConsumerChange(command.activeConsumerChange)
             
         case .closeProducer:
+            logger.debug("Handling CLOSE_PRODUCER")
             handleCloseProducer(command.closeProducer)
             
         case .closeConsumer:
+            logger.debug("Handling CLOSE_CONSUMER")
             handleCloseConsumer(command.closeConsumer)
             
         case .error:
+            logger.error("Handling ERROR: \(command.error)")
             handleError(command.error)
+            
+        case .lookupResponse:
+            logger.warning("Received unmatched LOOKUP_RESPONSE - this indicates a bug in request correlation")
+            
+        case .producerSuccess:
+            logger.warning("Received unmatched PRODUCER_SUCCESS - this indicates a bug in request correlation")
+            
+        case .success:
+            logger.warning("Received unmatched SUCCESS - this indicates a bug in request correlation")
             
         default:
             logger.warning("Unhandled command type: \(command.type)")
@@ -159,9 +201,11 @@ extension Connection {
     }
     
     private func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
+        logger.info("Received SendReceipt - producerID: \(receipt.producerID), sequenceID: \(receipt.sequenceID)")
         Task {
             // Forward to the producer channel
             if let producerChannel = await channelManager?.getProducer(id: receipt.producerID) {
+                logger.info("Found producer channel \(receipt.producerID), forwarding receipt for sequence \(receipt.sequenceID)")
                 await producerChannel.handleSendReceipt(receipt)
             } else {
                 logger.warning("Received send receipt for unknown producer \(receipt.producerID)")
@@ -342,9 +386,26 @@ public struct GetLastMessageIdResponse: ResponseCommand {
 extension Connection {
     /// Perform broker lookup for topic
     func lookup(topic: String) async throws -> LookupResponse {
+        logger.info("Starting lookup for topic: \(topic)")
+        
+        // Check connection state first
+        let currentState = state
+        logger.info("Connection state before lookup: \(currentState)")
+        
+        guard currentState == .connected else {
+            logger.error("Cannot perform lookup: connection not in connected state: \(currentState)")
+            throw PulsarClientError.connectionFailed("Connection not ready for lookup: \(currentState)")
+        }
+        
         let command = commandBuilder.lookup(topic: topic)
         let frame = PulsarFrame(command: command)
-        return try await sendRequest(frame, responseType: LookupResponse.self)
+        
+        logger.info("Sending lookup command for topic: \(topic) with request ID: \(command.lookupTopic.requestID)")
+        
+        let response = try await sendRequest(frame, responseType: LookupResponse.self)
+        
+        logger.info("Received lookup response for topic: \(topic)")
+        return response
     }
     
     /// Create a producer
@@ -366,6 +427,30 @@ extension Connection {
         let frame = PulsarFrame(command: command)
         let response = try await sendRequest(frame, responseType: ProducerSuccessResponse.self)
         return (producerId, response)
+    }
+    
+    /// Subscribe to a topic
+    func subscribe(
+        topic: String,
+        subscription: String,
+        subType: SubscriptionType,
+        consumerName: String? = nil,
+        initialPosition: SubscriptionInitialPosition = .latest,
+        schema: SchemaInfo? = nil,
+        preAssignedConsumerId: UInt64? = nil
+    ) async throws -> (UInt64, SuccessResponse) {
+        let (command, consumerId) = commandBuilder.subscribe(
+            topic: topic,
+            subscription: subscription,
+            subType: subType,
+            consumerName: consumerName,
+            initialPosition: initialPosition,
+            schema: schema,
+            preAssignedConsumerId: preAssignedConsumerId
+        )
+        let frame = PulsarFrame(command: command)
+        let response = try await sendRequest(frame, responseType: SuccessResponse.self)
+        return (consumerId, response)
     }
     
     /// Get the last message ID for a consumer

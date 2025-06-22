@@ -24,8 +24,8 @@ actor ProducerChannel: PulsarChannel {
     private(set) var state: ChannelState = .inactive
     internal weak var connection: Connection?
     
-    // Send receipt handling
-    private var pendingSends: [UInt64: CheckedContinuation<MessageId, Error>] = [:]
+    // Send receipt handling - store a type-erased wrapper
+    private var pendingSends: [UInt64: SendOperationWrapper] = [:]
     
     // Store schema info for reconnection
     private var schemaInfo: SchemaInfo?
@@ -46,25 +46,35 @@ actor ProducerChannel: PulsarChannel {
         state = newState
     }
     
-    /// Register a pending send and return a continuation for the receipt
-    func registerPendingSend(sequenceId: UInt64) async throws -> MessageId {
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingSends[sequenceId] = continuation
-        }
+    
+    
+    
+    /// Register a send operation (non-blocking, like C#)
+    func registerSendOperation<T>(_ operation: SendOperation<T>) {
+        logger.info("Registering send operation for sequence \(operation.sequenceId)")
+        let wrapper = AnySendOperationWrapper(operation)
+        pendingSends[operation.sequenceId] = wrapper
+        logger.info("Send operation registered. Total pending: \(pendingSends.count)")
     }
     
     /// Handle incoming send receipt
     func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
-        if let continuation = pendingSends.removeValue(forKey: receipt.sequenceID) {
+        logger.info("ProducerChannel handling send receipt for sequence \(receipt.sequenceID)")
+        logger.info("Current pending sends: \(pendingSends.keys.sorted())")
+        
+        if let wrapper = pendingSends.removeValue(forKey: receipt.sequenceID) {
             let messageId = MessageId(
                 ledgerId: receipt.messageID.ledgerID,
                 entryId: receipt.messageID.entryID,
                 partition: receipt.messageID.hasPartition ? receipt.messageID.partition : -1,
                 batchIndex: receipt.messageID.hasBatchIndex ? receipt.messageID.batchIndex : -1
             )
-            continuation.resume(returning: messageId)
+            logger.info("Found send operation for sequence \(receipt.sequenceID), completing with message ID: \(messageId)")
+            
+            // Complete the operation
+            wrapper.complete(with: messageId)
         } else {
-            logger.warning("Received send receipt for unknown sequence ID \(receipt.sequenceID)")
+            logger.warning("Received send receipt for unknown sequence ID \(receipt.sequenceID). Pending sequences: \(pendingSends.keys.sorted())")
         }
     }
     
@@ -73,8 +83,8 @@ actor ProducerChannel: PulsarChannel {
         state = .closing
         
         // Cancel all pending sends
-        for (_, continuation) in pendingSends {
-            continuation.resume(throwing: PulsarClientError.producerBusy("Producer closing"))
+        for (_, wrapper) in pendingSends {
+            wrapper.fail(with: PulsarClientError.producerBusy("Producer closing"))
         }
         pendingSends.removeAll()
         
@@ -165,7 +175,7 @@ actor ConsumerChannel: PulsarChannel {
 }
 
 // Add logger
-private let logger = Logger(label: "ConsumerChannel")
+private let logger = Logger(label: "ProducerChannel")
 
 /// Channel manager for a connection
 actor ChannelManager {

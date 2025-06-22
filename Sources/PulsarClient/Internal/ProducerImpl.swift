@@ -21,6 +21,10 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     private let batchBuilder: MessageBatchBuilder<T>?
     private var sendTask: Task<Void, Never>?
     
+    // Queue-based sending (like C# implementation)
+    private let sendQueue: SendQueue<T>
+    private var dispatcherTask: Task<Void, Never>?
+    
     // Fault tolerance components
     private let retryExecutor: RetryExecutor
     private let stateManager: ProducerStateManager
@@ -55,6 +59,11 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
         
+        // Initialize send queue
+        // If maxPendingMessages is 0, use unlimited (default to 1000)
+        let queueSize = configuration.maxPendingMessages == 0 ? 1000 : Int(configuration.maxPendingMessages)
+        self.sendQueue = SendQueue(maxSize: queueSize)
+        
         // Initialize fault tolerance components
         self.retryExecutor = RetryExecutor(logger: logger)
         self.stateManager = StateManagerFactory.createProducerStateManager(
@@ -77,6 +86,11 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
     
     func startBatchSender() {
+        // Start the message dispatcher (like C# MessageDispatcher)
+        dispatcherTask = Task { [weak self] in
+            await self?.runMessageDispatcher()
+        }
+        
         if configuration.batchingEnabled {
             // Set producer reference in batch builder
             Task { [weak self] in
@@ -93,6 +107,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     deinit {
         stateContinuation.finish()
         sendTask?.cancel()
+        dispatcherTask?.cancel()
     }
     
     // MARK: - StateHolder
@@ -187,33 +202,43 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
     
     public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
-        // Capture state and other properties before entering the closure
-        let currentState = _state
-        let sequenceId = nextSequenceId()
-        let batchBuilderCopy = batchBuilder
+        guard _state == .connected else {
+            throw PulsarClientError.producerBusy("Producer not connected")
+        }
         
-        return try await retryExecutor.executeWithProducerRetry(operation: "send") { [weak self] in
-            guard let self = self else {
-                throw PulsarClientError.producerBusy("Producer deallocated")
-            }
-            
-            guard currentState == .connected else {
-                throw PulsarClientError.producerBusy("Producer not connected")
-            }
-            
-            // Create producer message
-            let producerMessage = ProducerMessage(
-                value: message,
-                metadata: metadata,
-                sequenceId: sequenceId
-            )
-            
-            if let batchBuilder = batchBuilderCopy {
-                // Add to batch
-                return try await batchBuilder.add(producerMessage)
-            } else {
-                // Send immediately
-                return try await self.sendSingle(producerMessage)
+        // Assign sequence ID if not set
+        var metadata = metadata
+        if metadata.sequenceId == nil {
+            metadata.sequenceId = nextSequenceId()
+        }
+        
+        // Create the send operation with a continuation (like C# TaskCompletionSource)
+        return try await withCheckedThrowingContinuation { continuation in
+            Task {
+                do {
+                    // Encode message
+                    let payload = try self.schema.encode(message)
+                    
+                    // Create metadata
+                    let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
+                        producerName: self.producerName,
+                        sequenceId: metadata.sequenceId!,
+                        publishTime: Date(),
+                        properties: metadata.properties
+                    )
+                    
+                    // Create send operation
+                    let sendOp = SendOperation<T>(
+                        metadata: protoMetadata,
+                        payload: payload,
+                        continuation: continuation
+                    )
+                    
+                    // Enqueue the operation
+                    try await self.sendQueue.enqueue(sendOp)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }
@@ -253,11 +278,12 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     public func dispose() async {
         updateState(.closing)
         
-        // Cancel batch sender
+        // Cancel tasks
         sendTask?.cancel()
+        dispatcherTask?.cancel()
         
-        // Flush any pending messages
-        try? await flush()
+        // Cancel all pending operations
+        await sendQueue.cancelAll()
         
         // Send close producer command
         let closeCommand = await connection.commandBuilder.closeProducer(producerId: id)
@@ -297,44 +323,68 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
     }
     
-    private func sendSingle(_ message: ProducerMessage<T>) async throws -> MessageId {
-        // Encode message
-        let payload = try schema.encode(message.value)
+    /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
+    private func runMessageDispatcher() async {
+        logger.info("Starting message dispatcher for producer \(producerName)")
         
-        // Create metadata
-        let metadata = await connection.commandBuilder.createMessageMetadata(
-            from: message.metadata,
-            producerName: producerName,
-            publishTime: Date()
-        )
-        
-        // Create send command
-        let sendCommand = await connection.commandBuilder.send(
-            producerId: id,
-            sequenceId: message.sequenceId,
-            numMessages: 1
-        )
-        
-        // Create frame with metadata and payload
-        let frame = PulsarFrame(
-            command: sendCommand,
-            metadata: metadata,
-            payload: payload
-        )
-        
-        // Get the producer channel
-        let channelManager = await connection.getChannelManager()
-        guard let producerChannel = await channelManager.getProducer(id: id) else {
-            throw PulsarClientError.producerBusy("Producer channel not found")
+        while !Task.isCancelled && _state == .connected {
+            do {
+                // Get next operation from queue
+                let sendOp = try await sendQueue.dequeue()
+                
+                // Get the producer channel
+                let channelManager = await connection.getChannelManager()
+                guard let producerChannel = await channelManager.getProducer(id: id) else {
+                    sendOp.fail(with: PulsarClientError.producerBusy("Producer channel not found"))
+                    continue
+                }
+                
+                // Process the send operation
+                await processSendOperation(sendOp, channel: producerChannel)
+                
+            } catch {
+                if !Task.isCancelled {
+                    logger.error("Message dispatcher error: \(error)")
+                }
+            }
         }
         
-        // Register for receipt and send
-        async let messageIdFuture = producerChannel.registerPendingSend(sequenceId: message.sequenceId)
-        try await connection.sendCommand(frame)
-        
-        // Wait for receipt
-        return try await messageIdFuture
+        logger.info("Message dispatcher stopped for producer \(producerName)")
     }
+    
+    /// Process a single send operation (like C# channel.Send)
+    private func processSendOperation(_ sendOp: SendOperation<T>, channel: ProducerChannel) async {
+        do {
+            // Create send command
+            let sendCommand = await connection.commandBuilder.send(
+                producerId: id,
+                sequenceId: sendOp.sequenceId,
+                numMessages: 1
+            )
+            
+            // Create frame with metadata and payload
+            let frame = PulsarFrame(
+                command: sendCommand,
+                metadata: sendOp.metadata,
+                payload: sendOp.payload
+            )
+            
+            // Register the send operation with the channel
+            // This is key - we register BEFORE sending, but don't block
+            await channel.registerSendOperation(sendOp)
+            
+            // Send the frame
+            logger.info("Sending frame for sequence \(sendOp.sequenceId)")
+            try await connection.sendCommand(frame)
+            
+            // The receipt will be handled by the channel when it arrives
+            
+        } catch {
+            logger.error("Failed to send message: \(error)")
+            sendOp.fail(with: error)
+        }
+    }
+    
     
     private func runBatchSender() async {
         while !Task.isCancelled && _state == .connected {
@@ -354,17 +404,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
     }
     
-    /// Internal method for sending a batch from the batch builder
-    fileprivate func sendBatchInternal(_ batch: MessageBatch<T>) async throws {
-        try await sendBatch(batch)
-    }
     
     private func sendBatch(_ batch: MessageBatch<T>) async throws {
         guard !batch.messages.isEmpty else { return }
         
         // If only one message, send it as a single message
         if batch.messages.count == 1 {
-            _ = try await sendSingle(batch.messages[0])
+            _ = try await send(batch.messages[0].value, metadata: batch.messages[0].metadata)
             return
         }
         
@@ -462,16 +508,14 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         
         // Get the producer channel
         let channelManager = await connection.getChannelManager()
-        guard let producerChannel = await channelManager.getProducer(id: id) else {
+        guard await channelManager.getProducer(id: id) != nil else {
             throw PulsarClientError.producerBusy("Producer channel not found")
         }
         
-        // Register for receipt with highest sequence ID
-        async let messageIdFuture = producerChannel.registerPendingSend(sequenceId: highestSequenceId)
+        // For batch sends, we need to handle all messages differently
+        // The C# client uses a different approach for batches
+        // For now, just send the batch without waiting for individual receipts
         try await connection.sendCommand(frame)
-        
-        // Wait for receipt
-        _ = try await messageIdFuture
         
         // The broker will assign message IDs for individual messages in the batch
         // For now, we'll return the base message ID
@@ -716,6 +760,11 @@ extension ProducerImpl {
     /// Set the tracker for this producer
     func setTracker(_ tracker: ClientTracker) {
         self.tracker = tracker
+    }
+    
+    /// Internal method to send batch (used by MessageBatchBuilder)
+    fileprivate func sendBatchInternal(_ batch: MessageBatch<T>) async throws {
+        try await sendBatch(batch)
     }
 }
 

@@ -19,19 +19,25 @@ extension ConnectionPool {
     
     /// Enhanced lookup with retries and caching
     func lookup(topic: String) async throws -> BrokerLookupResult {
+        logger.info("Starting lookup for topic: \(topic)")
+        
         // Try to get a connection to the service URL
+        logger.info("Getting connection for service URL: \(serviceUrl)")
         let connection = try await getConnection(for: serviceUrl)
+        logger.info("Got connection for service URL")
         
         var attempts = 0
         let maxAttempts = 3
         
         while attempts < maxAttempts {
             do {
+                logger.info("Lookup attempt \(attempts + 1) for topic: \(topic)")
                 let lookupResponse = try await connection.lookup(topic: topic)
                 
                 switch lookupResponse.response {
                 case .connect(let brokerUrl, let brokerUrlTls):
                     // Direct connection to broker
+                    logger.info("Lookup successful - connect to \(brokerUrl)")
                     return BrokerLookupResult(
                         brokerUrl: brokerUrl,
                         brokerUrlTls: brokerUrlTls,
@@ -40,10 +46,11 @@ extension ConnectionPool {
                     
                 case .redirect(let brokerUrl, let brokerUrlTls):
                     // Need to connect to a different broker for lookup
-                    logger.debug("Redirected to \(brokerUrl) for topic \(topic)")
+                    logger.info("Redirected to \(brokerUrl) for topic \(topic)")
                     
                     // If we should proxy through service URL, use the original connection
                     if lookupResponse.proxyThroughServiceUrl {
+                        logger.info("Using proxy through service URL")
                         return BrokerLookupResult(
                             brokerUrl: serviceUrl,
                             brokerUrlTls: nil,
@@ -52,16 +59,19 @@ extension ConnectionPool {
                     }
                     
                     // Otherwise, try lookup on the redirected broker
+                    logger.info("Following redirect to \(brokerUrl)")
                     let redirectConnection = try await getConnection(for: brokerUrl)
                     return try await redirectConnection.lookup(topic: topic).toBrokerLookupResult()
                     
                 case .failed(let error):
+                    logger.error("Lookup failed with server error: \(error)")
                     throw mapServerError(error)
                 }
                 
             } catch {
                 attempts += 1
                 if attempts >= maxAttempts {
+                    logger.error("Lookup failed after \(maxAttempts) attempts: \(error)")
                     throw error
                 }
                 

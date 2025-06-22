@@ -19,6 +19,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     private let messageQueue: AsyncChannel<Message<T>>
     private var receiveTask: Task<Void, Never>?
     private var permits: Int
+    private var isFirstFlow = true
     private var lastReceivedMessageId: MessageId?
     
     public let topics: [String]
@@ -48,7 +49,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         self.logger = logger
         self.channelManager = channelManager
         self.tracker = tracker
-        self.permits = configuration.receiverQueueSize
+        self.permits = 0  // Start with 0 permits, will request them in runReceiver
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
         self.messageQueue = AsyncChannel(capacity: configuration.receiverQueueSize)
@@ -165,9 +166,9 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             throw PulsarClientError.consumerBusy("Consumer closed")
         }
         
-        // Flow control: request more messages if needed
+        // Flow control: request more messages if needed (more aggressive like C# client)
         permits -= 1
-        if permits <= configuration.receiverQueueSize / 2 {
+        if permits <= configuration.receiverQueueSize / 4 {
             await requestMoreMessages()
         }
         
@@ -342,6 +343,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     /// Handle incoming message from broker
     /// Note: In Pulsar protocol, the actual message payload comes separately from the CommandMessage
     func handleIncomingMessage(_ commandMessage: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata) async {
+        logger.info("Consumer \(id) received message: ledger=\(commandMessage.messageID.ledgerID), entry=\(commandMessage.messageID.entryID)")
+        
         do {
             // Decode message payload
             let value = try schema.decode(payload)
@@ -423,8 +426,23 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     }
     
     private func requestMoreMessages() async {
-        let permitsToRequest = configuration.receiverQueueSize - permits
-        guard permitsToRequest > 0 else { return }
+        let permitsToRequest: Int
+        
+        if isFirstFlow {
+            // First FLOW command: request full receiver queue size (like C# client)
+            permitsToRequest = configuration.receiverQueueSize
+            logger.info("Consumer \(id) sending FIRST FLOW command for \(permitsToRequest) permits")
+            isFirstFlow = false
+        } else {
+            // Subsequent FLOW commands: only request what we need (like C# client)
+            let needed = configuration.receiverQueueSize - permits
+            guard needed > 0 else {
+                logger.debug("No permits to request - current: \(permits), queue size: \(configuration.receiverQueueSize)")
+                return
+            }
+            permitsToRequest = needed
+            logger.info("Consumer \(id) requesting \(permitsToRequest) additional permits (current: \(permits))")
+        }
         
         let flowCommand = await connection.commandBuilder.flow(
             consumerId: id,
@@ -435,16 +453,40 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         do {
             try await connection.sendCommand(frame)
             permits += permitsToRequest
-            logger.trace("Requested \(permitsToRequest) more message permits")
+            logger.info("Successfully sent FLOW command for \(permitsToRequest) permits, total permits now: \(permits)")
         } catch {
             logger.warning("Failed to request more messages: \(error)")
         }
     }
     
     private func runReceiver() async {
-        // This task handles connection events and message delivery
+        logger.info("Consumer \(id) receiver task started")
+        
+        // Send initial FLOW command to start receiving messages
+        await requestMoreMessages()
+        logger.info("Consumer \(id) sent initial FLOW command with \(permits) permits")
+        
+        // Keep the receiver task alive to handle ongoing operations
         // The actual message receiving is handled by handleIncomingMessage
         // which is called by the connection when messages arrive
+        while !Task.isCancelled && _state == .connected {
+            do {
+                // Sleep and periodically check state
+                try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                
+                // Check if we need more permits (flow control)
+                if permits <= configuration.receiverQueueSize / 4 {
+                    await requestMoreMessages()
+                }
+            } catch {
+                if !Task.isCancelled {
+                    logger.warning("Consumer receiver error: \(error)")
+                }
+                break
+            }
+        }
+        
+        logger.info("Consumer \(id) receiver task stopped")
     }
     
     private func determineTopicName(from commandMessage: Pulsar_Proto_CommandMessage, metadata: Pulsar_Proto_MessageMetadata) -> String {

@@ -1,0 +1,31 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "swift-build-tests",
+            "type": "shell",
+            "command": "swift build --build-tests"
+        },
+        {
+            "label": "start-pulsar",
+            "type": "shell",
+            "command": "./scripts/test-env.sh start",
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": "^(Pulsar is ready!)$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^Starting Pulsar test environment",
+                    "endsPattern": "^Pulsar is ready!"
+                }
+            }
+        },
+        {
+            "label": "stop-pulsar",
+            "type": "shell",
+            "command": "./scripts/test-env.sh stop"
+        }
+    ]
+}

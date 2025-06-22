@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # Apache Pulsar Standalone (for development and basic testing)
+  pulsar-standalone:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: pulsar-standalone
+    ports:
+      - "6650:6650"  # Pulsar broker
+      - "8080:8080"  # HTTP admin API
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+    command: bin/pulsar standalone
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - pulsar-data:/pulsar/data
+      - pulsar-conf:/pulsar/conf
+    networks:
+      - pulsar-net
+
+  # Toxiproxy for network failure testing
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.11.0
+    container_name: toxiproxy
+    ports:
+      - "8474:8474"  # Toxiproxy API
+      - "16650:16650" # Proxied Pulsar broker
+    networks:
+      - pulsar-net
+    depends_on:
+      pulsar-standalone:
+        condition: service_healthy
+
+  # Pulsar Manager (optional, for UI management)
+  pulsar-manager:
+    image: apachepulsar/pulsar-manager:v0.3.0
+    container_name: pulsar-manager
+    ports:
+      - "9527:9527"
+      - "7750:7750"
+    environment:
+      SPRING_CONFIGURATION_FILE: /pulsar-manager/pulsar-manager/application.properties
+    depends_on:
+      pulsar-standalone:
+        condition: service_healthy
+    networks:
+      - pulsar-net
+    profiles:
+      - ui
+
+volumes:
+  pulsar-data:
+  pulsar-conf:
+
+networks:
+  pulsar-net:
+    driver: bridge

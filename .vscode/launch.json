@@ -1,0 +1,28 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Run Tests",
+            "program": ".build/debug/PulsarClientPackageTests.xctest",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "swift-build-tests",
+            "env": {
+                "PULSAR_SERVICE_URL": "pulsar://localhost:6650"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Run Integration Tests",
+            "program": ".build/debug/PulsarClientPackageTests.xctest",
+            "args": ["--filter", "IntegrationTests"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "start-pulsar",
+            "postDebugTask": "stop-pulsar",
+            "env": {}
+        }
+    ]
+}

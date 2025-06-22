@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # Zookeeper
+  zookeeper:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    command: bin/pulsar zookeeper
+    environment:
+      - PULSAR_MEM=-Xms256m -Xmx256m
+    healthcheck:
+      test: ["CMD", "bin/pulsar-zookeeper-ruok.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - pulsar-cluster
+
+  # BookKeeper
+  bookkeeper:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: bookkeeper
+    hostname: bookkeeper
+    ports:
+      - "3181:3181"
+    command: bin/pulsar bookie
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m
+      - zkServers=zookeeper:2181
+      - clusterName=cluster-a
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bin/bookkeeper", "shell", "bookiesanity"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - pulsar-cluster
+
+  # Pulsar Broker
+  broker:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: broker
+    hostname: broker
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    command: bin/pulsar broker
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m
+      - zookeeperServers=zookeeper:2181
+      - clusterName=cluster-a
+      - advertisedAddress=broker
+      - advertisedListeners=pulsar://broker:6650
+    depends_on:
+      - zookeeper
+      - bookkeeper
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - pulsar-cluster
+
+networks:
+  pulsar-cluster:
+    driver: bridge

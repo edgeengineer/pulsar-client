@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  pulsar-auth:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: pulsar-auth
+    ports:
+      - "6651:6650"
+      - "8081:8080"
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+    command: >
+      bash -c "
+        # Generate keys for token authentication
+        bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
+        bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject admin > /pulsar/conf/admin.token
+        bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
+        
+        # Update configuration
+        echo 'authenticationEnabled=true' >> /pulsar/conf/standalone.conf
+        echo 'authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken' >> /pulsar/conf/standalone.conf
+        echo 'brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken' >> /pulsar/conf/standalone.conf
+        echo 'brokerClientAuthenticationParameters=token:$$(cat /pulsar/conf/admin.token)' >> /pulsar/conf/standalone.conf
+        echo 'tokenSecretKey=file:///pulsar/conf/secret.key' >> /pulsar/conf/standalone.conf
+        echo 'superUserRoles=admin' >> /pulsar/conf/standalone.conf
+        
+        # Start Pulsar
+        bin/pulsar standalone
+      "
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "--auth-plugin", "org.apache.pulsar.client.impl.auth.AuthenticationToken", "--auth-params", "token:$$(cat /pulsar/conf/admin.token)", "brokers", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - pulsar-auth-data:/pulsar/data
+      - pulsar-auth-conf:/pulsar/conf
+    networks:
+      - pulsar-net
+
+volumes:
+  pulsar-auth-data:
+  pulsar-auth-conf:
+
+networks:
+  pulsar-net:
+    driver: bridge

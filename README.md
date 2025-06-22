@@ -1,6 +1,8 @@
 # PulsarClient for Swift
 
-!!!WARNING STILL UNDER ACTIVE DEVELOPMENT!!!
+🎉 **Connection Issue Resolved!** The Swift Pulsar client now successfully connects to Apache Pulsar and can perform basic operations.
+
+⚠️ **Still Under Active Development** - More features and testing in progress.
 
 ![Swift](https://img.shields.io/badge/Swift-6.1-orange.svg)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%20%7C%20macOS%20%7C%20tvOS%20%7C%20watchOS%20%7C%20Linux-lightgray.svg)
@@ -415,6 +417,103 @@ class MyExceptionHandler: ExceptionHandler {
         }
     }
 }
+```
+
+## Testing
+
+### Prerequisites for Running Tests
+
+Before running integration tests, ensure you have the following installed:
+
+1. **Docker** - Required for running Apache Pulsar locally
+   - macOS: Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+   - Linux: Install Docker Engine via your package manager
+   
+2. **Docker Compose** - Usually included with Docker Desktop
+   ```bash
+   # Verify installation
+   docker --version
+   docker-compose --version
+   ```
+
+3. **Swift 6.1+** - Required for building and running tests
+   ```bash
+   swift --version
+   ```
+
+### Running Tests
+
+The project includes both unit tests and integration tests.
+
+#### Unit Tests
+```bash
+# Run unit tests only
+swift test --filter PulsarClientTests
+
+# Or using the helper script
+./scripts/run-tests.sh --unit
+```
+
+#### Integration Tests
+Integration tests require a running Pulsar instance. We provide Docker-based infrastructure:
+
+```bash
+# Option 1: Use the all-in-one script (recommended)
+./scripts/run-tests.sh --integration --env standalone
+
+# Option 2: Manual steps
+# Start Pulsar for testing
+./scripts/test-env.sh start
+
+# Run integration tests
+ENABLE_INTEGRATION_TESTS=1 swift test --filter IntegrationTests
+
+# Stop Pulsar when done
+./scripts/test-env.sh stop
+```
+
+**Note**: If you already have a Pulsar instance running on the default ports (6650, 8080), the tests will use that instance instead.
+
+#### Test Environments
+
+1. **Standalone Mode** (default)
+   ```bash
+   ./scripts/test-env.sh start
+   ```
+
+2. **Cluster Mode**
+   ```bash
+   ./scripts/test-env.sh start --cluster
+   ```
+
+3. **Authentication Mode**
+   ```bash
+   ./scripts/test-env.sh start --auth
+   ```
+
+### Docker Infrastructure
+
+The project includes comprehensive Docker Compose configurations:
+
+- `docker/docker-compose.yml` - Standalone Pulsar with Toxiproxy
+- `docker/docker-compose.cluster.yml` - Full Pulsar cluster
+- `docker/docker-compose.auth.yml` - Pulsar with authentication
+
+See [docker/README.md](docker/README.md) for detailed Docker setup information.
+
+### Development Setup
+
+```bash
+# One-time setup
+./scripts/setup-dev.sh
+
+# Common tasks
+make test           # Run all tests
+make test-unit      # Run unit tests only
+make test-integration # Run integration tests
+make docker-up      # Start Pulsar
+make docker-down    # Stop Pulsar
+make docker-logs    # View logs
 ```
 
 ## Best Practices

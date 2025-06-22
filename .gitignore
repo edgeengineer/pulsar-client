@@ -17,3 +17,13 @@ Samples/.build/
 # Claude AI
 .claude
 CLAUDE.md
+
+# Docker volumes
+docker/pulsar-data/
+docker/pulsar-conf/
+docker/pulsar-auth-data/
+docker/pulsar-auth-conf/
+
+# Local environment files
+.env.local
+.env.test

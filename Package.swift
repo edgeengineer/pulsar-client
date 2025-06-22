@@ -23,7 +23,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.83.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.32.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0")
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0"),
+        .package(url: "https://github.com/edgeengineer/cyclic-redundancy-check.git", from: "0.0.3")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -36,12 +37,17 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "Crypto", package: "swift-crypto")
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "CyclicRedundancyCheck", package: "cyclic-redundancy-check")
             ],
             exclude: ["Proto/PulsarApi.proto"]
         ),
         .testTarget(
             name: "PulsarClientTests",
+            dependencies: ["PulsarClient"]
+        ),
+        .testTarget(
+            name: "PulsarClientIntegrationTests",
             dependencies: ["PulsarClient"]
         ),
     ],
