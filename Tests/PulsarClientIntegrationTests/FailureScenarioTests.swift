@@ -1,5 +1,10 @@
 import Testing
 import Foundation
+// on Linux, FoundationNetworking is a seperate library
+// so we import it here if we can
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PulsarClient
 
 @Suite("Failure Scenario Tests")
