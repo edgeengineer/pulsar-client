@@ -47,10 +47,10 @@ struct ConsumerIntegrationTests {
                 .subscriptionName("shared-sub")
                 .subscriptionType(.shared)
         }
-        
-        // Both should succeed
-        #expect(sharedConsumer1 != nil)
-        #expect(sharedConsumer2 != nil)
+
+        // check that the consumers are connected
+        #expect(sharedConsumer1.state == .connected)
+        #expect(sharedConsumer2.state == .connected)
         
         await sharedConsumer1.dispose()
         await sharedConsumer2.dispose()

@@ -30,7 +30,8 @@ struct FailureScenarioTests {
         
         // Send initial message
         let messageId1 = try await producer.send("Before failure")
-        #expect(messageId1 != nil)
+        // MessageId is non-optional so test for a valid ledgerId instead
+        #expect(messageId1.ledgerId > 0)
         
         // Disable proxy to simulate network failure
         try await proxy.disable()
@@ -48,7 +49,8 @@ struct FailureScenarioTests {
         
         // Should be able to send again
         let messageId2 = try await producer.send("After recovery")
-        #expect(messageId2 != nil)
+        // MessageId is non-optional so test for a valid ledgerId instead
+        #expect(messageId2.ledgerId > 0)
         
         await producer.dispose()
         await client.dispose()

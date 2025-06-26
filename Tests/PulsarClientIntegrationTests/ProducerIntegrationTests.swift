@@ -25,13 +25,14 @@ struct ProducerIntegrationTests {
         
         // Send message
         let messageContent = "Hello, Pulsar!"
-        let messageId = try await producer.send(messageContent)
+        try await producer.send(messageContent)
         
         // Receive message
         let receivedMessage = try await consumer.receive(timeout: 5.0)
         
         #expect(receivedMessage.value == messageContent)
-        #expect(receivedMessage.id != nil)
+        // MessageId is non-optional so test for a valid ledgerId instead
+        #expect(receivedMessage.id.ledgerId > 0)
         
         // Acknowledge
         try await consumer.acknowledge(receivedMessage)
