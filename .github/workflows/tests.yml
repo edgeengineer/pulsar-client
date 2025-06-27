@@ -41,6 +41,13 @@ jobs:
           --health-interval 30s
           --health-timeout 10s
           --health-retries 5
+          --health-start-period 60s
+        
+        toxiproxy:
+        image: shopify/toxiproxy:2.8.0
+        ports:
+          - 8474:8474
+          - 16650:16650
     
     steps:
     - uses: actions/checkout@v4
