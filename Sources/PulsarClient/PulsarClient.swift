@@ -357,6 +357,7 @@ public final class PulsarClientBuilder {
     internal var logger: Logger = Logger(label: "PulsarClient")
     internal var authentication: Authentication?
     internal var encryptionPolicy: EncryptionPolicy = .preferUnencrypted
+    internal var operationTimeout: TimeInterval = 30.0
     
     /// Initialize a new PulsarClientBuilder
     public init() {}
@@ -392,6 +393,14 @@ public final class PulsarClientBuilder {
         self.encryptionPolicy = policy
         return self
     }
+
+    /// Set the operation timeout
+    /// - Parameter timeout: The timeout (in seconds) to use
+    @discardableResult
+    public func withOperationTimeout(_ timeout: TimeInterval) -> PulsarClientBuilder {
+        self.operationTimeout = timeout
+        return self
+    }
     
     /// Build the PulsarClient
     /// - Returns: A new PulsarClient instance
@@ -405,7 +414,7 @@ public final class PulsarClientBuilder {
             serviceUrl: serviceUrl,
             authentication: authentication,
             encryptionPolicy: encryptionPolicy,
-            operationTimeout: 30.0,
+            operationTimeout: operationTimeout,
             ioThreads: 1,
             messageListenerThreads: 1,
             connectionsPerBroker: 1,
