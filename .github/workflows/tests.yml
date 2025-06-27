@@ -30,35 +30,6 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     
-    services:
-      # Pulsar service
-      pulsar:
-        image: apachepulsar/pulsar:3.2.0
-        ports:
-          - 6650:6650
-          - 8080:8080
-        env:
-          PULSAR_MEM: -Xms512m -Xmx512m
-          PULSAR_STANDALONE_USE_ZOOKEEPER: "true"
-        options: >-
-          --health-cmd "curl -f http://localhost:8080/admin/v2/brokers/health || exit 1"
-          --health-interval 30s
-          --health-timeout 10s
-          --health-retries 3
-          --health-start-period 120s
-        
-      # Toxiproxy service for failure testing
-      toxiproxy:
-        image: ghcr.io/shopify/toxiproxy:2.11.0
-        ports:
-          - 8474:8474
-        options: >-
-          --health-cmd "curl -s http://localhost:8474/version || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 3
-          --health-start-period 30s
-    
     steps:
     - uses: actions/checkout@v4
     
@@ -67,14 +38,29 @@ jobs:
       with:
         swift-version: '6.1'
     
-    - name: Wait for Pulsar
+    - name: Start Pulsar and Toxiproxy
       run: |
+        # Start Pulsar
+        docker run -d \
+          --name pulsar-test \
+          --network host \
+          -e PULSAR_MEM="-Xms512m -Xmx512m" \
+          -e PULSAR_STANDALONE_USE_ZOOKEEPER="true" \
+          apachepulsar/pulsar:3.2.0 \
+          bin/pulsar standalone
+        
+        # Start Toxiproxy
+        docker run -d \
+          --name toxiproxy-test \
+          --network host \
+          ghcr.io/shopify/toxiproxy:2.11.0
+        
+        # Wait for Pulsar to be ready
         echo "Waiting for Pulsar to be ready..."
-        timeout 180 bash -c 'until curl -f http://localhost:8080/admin/v2/brokers/health; do sleep 5; echo "Still waiting..."; done'
+        timeout 180 bash -c 'until docker exec pulsar-test bin/pulsar-admin brokers healthcheck; do sleep 5; echo "Still waiting..."; done'
         echo "Pulsar is ready!"
-    
-    - name: Wait for Toxiproxy
-      run: |
+        
+        # Wait for Toxiproxy to be ready
         echo "Waiting for Toxiproxy to be ready..."
         timeout 60 bash -c 'until curl -f http://localhost:8474/version; do sleep 2; echo "Still waiting..."; done'
         echo "Toxiproxy is ready!"
@@ -87,7 +73,7 @@ jobs:
           -d '{
             "name": "pulsar",
             "listen": "0.0.0.0:16650",
-            "upstream": "pulsar:6650",
+            "upstream": "localhost:6650",
             "enabled": true
           }'
         echo "Toxiproxy configured successfully"
@@ -97,7 +83,13 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
         TOXIPROXY_URL: http://localhost:8474
-      run: swift test --filter IntegrationTests
+      run: swift test --filter PulsarClientIntegrationTests
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        docker stop pulsar-test toxiproxy-test || true
+        docker rm pulsar-test toxiproxy-test || true
 
   integration-tests-auth:
     name: Integration Tests with Authentication
@@ -113,7 +105,6 @@ jobs:
     
     - name: Start Pulsar with Auth
       run: |
-       run: |
         docker compose -f docker/docker-compose.auth.yml up -d
         # Wait for Pulsar to be ready
         timeout 180 bash -c 'until curl -f http://localhost:8081/admin/v2/brokers/health; do sleep 5; echo "Still waiting..."; done'
@@ -129,7 +120,7 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6651
         PULSAR_ADMIN_URL: http://localhost:8081
         PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-      run: swift test --filter IntegrationTests
+      run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
       if: always()
@@ -157,7 +148,7 @@ jobs:
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
-      run: swift test --filter IntegrationTests
+      run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
       if: always()
