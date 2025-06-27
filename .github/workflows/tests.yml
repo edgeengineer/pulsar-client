@@ -10,9 +10,11 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        container: [swift:6.1.0]
         swift: ['6.1']
     
     steps:
