@@ -75,6 +75,7 @@ jobs:
       uses: swift-actions/setup-swift@v2
       with:
         swift-version: ${{ matrix.swift-version }}
+        skip-signature-check: true
 
     - name: Start Pulsar and Toxiproxy
       run: |
@@ -145,6 +146,7 @@ jobs:
       uses: swift-actions/setup-swift@v2
       with:
         swift-version: ${{ matrix.swift-version }}
+        skip-signature-check: true
     
     - name: Start Pulsar with Auth
       run: |
@@ -185,6 +187,7 @@ jobs:
       uses: swift-actions/setup-swift@v2
       with:
         swift-version: ${{ matrix.swift-version }}
+        skip-signature-check: true
     
     - name: Start Pulsar Cluster
       run: |
