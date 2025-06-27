@@ -16,8 +16,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+      start_period: 30s
     networks:
       - pulsar-cluster
+    restart: unless-stopped
 
   # BookKeeper
   bookkeeper:
@@ -39,8 +41,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+      start_period: 30s
     networks:
       - pulsar-cluster
+    restart: unless-stopped
 
   # Pulsar Broker
   broker:
@@ -58,15 +62,19 @@ services:
       - advertisedAddress=broker
       - advertisedListeners=pulsar://broker:6650
     depends_on:
-      - zookeeper
-      - bookkeeper
+      zookeeper:
+        condition: service_healthy
+      bookkeeper:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 30
+      start_period: 30s
     networks:
       - pulsar-cluster
+    restart: unless-stopped
 
 networks:
   pulsar-cluster:
