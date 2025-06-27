@@ -64,6 +64,24 @@ jobs:
           sleep 5
         done
     
+    - name: Setup Toxiproxy
+      run: |
+        # Wait for Toxiproxy to be ready
+        until curl -s http://localhost:8474/version; do
+          echo "Waiting for Toxiproxy..."
+          sleep 2
+        done
+        
+        # Configure Toxiproxy proxy
+        curl -X POST http://localhost:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "name": "pulsar",
+            "listen": "0.0.0.0:16650",
+            "upstream": "pulsar:6650",
+            "enabled": true
+          }'
+
     - name: Run Integration Tests
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
@@ -85,7 +103,11 @@ jobs:
     - name: Start Pulsar with Auth
       run: |
         docker-compose -f docker/docker-compose.auth.yml up -d
-        ./scripts/test-env.sh wait --timeout 120
+        # Wait for Pulsar to be ready
+        until curl -s http://localhost:8081/admin/v2/brokers/health; do
+          echo "Waiting for Pulsar with auth..."
+          sleep 5
+        done
     
     - name: Get Auth Token
       id: auth
@@ -119,7 +141,11 @@ jobs:
     - name: Start Pulsar Cluster
       run: |
         docker-compose -f docker/docker-compose.cluster.yml up -d
-        ./scripts/test-env.sh wait --cluster --timeout 180
+        # Wait for cluster to be ready
+        until curl -s http://localhost:8080/admin/v2/brokers/health; do
+          echo "Waiting for Pulsar cluster..."
+          sleep 5
+        done
     
     - name: Run Integration Tests
       env:
