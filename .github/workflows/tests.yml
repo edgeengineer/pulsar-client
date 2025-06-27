@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     
     services:
+      # Pulsar service
       pulsar:
         image: apachepulsar/pulsar:3.2.0
         ports:
@@ -43,11 +44,18 @@ jobs:
           --health-retries 5
           --health-start-period 60s
         
+      # Toxiproxy service for failure testing
       toxiproxy:
-        image: shopify/toxiproxy:2.8.0
+        image: ghcr.io/shopify/toxiproxy:2.11.0
         ports:
           - 8474:8474
           - 16650:16650
+        options: >-
+          --health-cmd "curl -s http://localhost:8474/version || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 60s
     
     steps:
     - uses: actions/checkout@v4
@@ -86,6 +94,7 @@ jobs:
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
+        TOXIPROXY_URL: http://localhost:8474
       run: swift test --filter IntegrationTests
 
   integration-tests-auth:
