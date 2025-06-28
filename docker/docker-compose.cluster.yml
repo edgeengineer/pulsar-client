@@ -31,6 +31,7 @@ services:
     command: bin/pulsar bookie
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_GC=-XX:+UseG1GC
       - zkServers=zookeeper:2181
       - clusterName=cluster-a
     depends_on:
@@ -40,8 +41,8 @@ services:
       test: ["CMD", "bin/bookkeeper", "shell", "bookiesanity"]
       interval: 10s
       timeout: 5s
-      retries: 30
-      start_period: 30s
+      retries: 5
+      start_period: 60s
     networks:
       - pulsar-cluster
     restart: unless-stopped
