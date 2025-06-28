@@ -20,6 +20,25 @@ services:
     networks:
       - pulsar-cluster
     restart: unless-stopped
+  pulsar-init:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: pulsar-init
+    hostname: pulsar-init
+    command: >
+      bash -c "
+        bin/pulsar initialize-cluster-metadata \
+          --cluster cluster-a \
+          --zookeeper zookeeper:2181 \
+          --configuration-store zookeeper:2181 \
+          --web-service-url http://broker:8080 \
+          --broker-service-url pulsar://broker:6650
+      "
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - pulsar-cluster
+    restart: "no"
 
   # BookKeeper
   bookkeeper:
@@ -34,9 +53,12 @@ services:
       - PULSAR_GC=-XX:+UseG1GC
       - zkServers=zookeeper:2181
       - clusterName=cluster-a
+      - metadataServiceUri=metadata-store:zk:zookeeper:2181
     depends_on:
       zookeeper:
         condition: service_healthy
+      pulsar-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 3181"]
       interval: 10s

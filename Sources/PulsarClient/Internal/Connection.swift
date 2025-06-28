@@ -212,7 +212,8 @@ actor Connection: PulsarConnection {
     }
     
     func close() async {
-        guard _state == .connected else { return }
+        guard _state == .connected || _state == .reconnecting || _state == .connecting 
+        else { return }
         
         updateState(.closing)
         
