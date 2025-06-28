@@ -93,6 +93,6 @@ struct ProducerIntegrationTests {
     }
 
     func tearDown() async {
-        await testCase.tearDown()
+        await testCase.cleanup()
     }
 }

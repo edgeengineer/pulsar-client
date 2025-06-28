@@ -100,6 +100,6 @@ struct ConsumerIntegrationTests {
     }
 
     func tearDown() async {
-        await testCase.tearDown()
+        await testCase.cleanup()
     }
 }

@@ -53,10 +53,11 @@ struct FailureScenarioTests {
         
         await producer.dispose()
         await client.dispose()
+        proxy.finish()
     }
 
     func tearDown() async {
-        await testCase.tearDown()
+        await testCase.cleanup()
     }
 }
 
@@ -72,6 +73,13 @@ struct ToxiproxyClient {
 struct ToxiproxyProxy {
     let client: ToxiproxyClient
     let name: String
+    private let urlSession: URLSession
+    
+    init(client: ToxiproxyClient, name: String) {
+        self.client = client
+        self.name = name
+        self.urlSession = URLSession(configuration: .default)
+    }
     
     func disable() async throws {
         var request = URLRequest(url: URL(string: "\(client.baseURL)/proxies/\(name)")!)
@@ -79,7 +87,7 @@ struct ToxiproxyProxy {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["enabled": false])
         
-        _ = try await URLSession.shared.data(for: request)
+        _ = try await urlSession.data(for: request)
     }
     
     func enable() async throws {
@@ -88,6 +96,10 @@ struct ToxiproxyProxy {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["enabled": true])
         
-        _ = try await URLSession.shared.data(for: request)
+        _ = try await urlSession.data(for: request)
+    }
+
+    func finish() {
+        urlSession.finishTasksAndInvalidate()
     }
 }

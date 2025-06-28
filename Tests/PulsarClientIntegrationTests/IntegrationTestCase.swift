@@ -119,7 +119,7 @@ actor IntegrationTestCase {
         }
     }
     
-    private func cleanup() async {
+    func cleanup() async {
         // Close client
         if let client = _client {
             await client.dispose()
