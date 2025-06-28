@@ -144,9 +144,7 @@ jobs:
     
     - name: Start Pulsar with Auth
       run: |
-        docker compose -f docker/docker-compose.auth.yml up -d
-        # Wait for Pulsar to be ready
-        timeout 180 bash -c 'until curl -f http://localhost:8081/admin/v2/brokers/health; do sleep 5; echo "Still waiting..."; done'
+        docker compose -f docker/docker-compose.auth.yml up -d --wait
     
     - name: Get Auth Token
       id: auth
@@ -182,9 +180,7 @@ jobs:
     
     - name: Start Pulsar Cluster
       run: |
-        docker compose -f docker/docker-compose.cluster.yml up -d
-        # Wait for cluster to be ready
-        timeout 180 bash -c 'until curl -f http://localhost:8080/admin/v2/brokers/health; do sleep 5; echo "Still waiting..."; done'
+        docker compose -f docker/docker-compose.cluster.yml up -d --wait
     
     - name: Run Integration Tests
       env:

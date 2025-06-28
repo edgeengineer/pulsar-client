@@ -98,4 +98,8 @@ struct ConsumerIntegrationTests {
         await producer.dispose()
         await consumer2.dispose()
     }
+
+    func tearDown() async {
+        await testCase.tearDown()
+    }
 }

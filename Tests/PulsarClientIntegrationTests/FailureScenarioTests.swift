@@ -54,6 +54,10 @@ struct FailureScenarioTests {
         await producer.dispose()
         await client.dispose()
     }
+
+    func tearDown() async {
+        await testCase.tearDown()
+    }
 }
 
 // Simplified Toxiproxy client for testing
