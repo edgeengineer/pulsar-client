@@ -29,11 +29,13 @@ services:
         bin/pulsar standalone
       "
     healthcheck:
-      test: ["CMD", "bin/pulsar-admin", "--auth-plugin", "org.apache.pulsar.client.impl.auth.AuthenticationToken", "--auth-params", "token:$$(cat /pulsar/conf/admin.token)", "brokers", "healthcheck"]
+      test: ["CMD-SHELL",
+             "bin/pulsar-admin --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+              --auth-params token:$(cat /pulsar/conf/admin.token) brokers healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 90s
     volumes:
       - pulsar-auth-data:/pulsar/data
       - pulsar-auth-conf:/pulsar/conf

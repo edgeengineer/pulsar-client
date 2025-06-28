@@ -73,12 +73,11 @@ struct ToxiproxyClient {
 struct ToxiproxyProxy {
     let client: ToxiproxyClient
     let name: String
-    private let urlSession: URLSession
+    private let urlSession = URLSession(configuration: .default)
     
     init(client: ToxiproxyClient, name: String) {
         self.client = client
         self.name = name
-        self.urlSession = URLSession(configuration: .default)
     }
     
     func disable() async throws {
