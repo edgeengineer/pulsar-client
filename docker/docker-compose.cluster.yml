@@ -24,6 +24,7 @@ services:
     image: apachepulsar/pulsar:3.2.0
     container_name: pulsar-init
     hostname: pulsar-init
+    working_dir: /pulsar
     command: >
       bash -c "
         bin/pulsar initialize-cluster-metadata \

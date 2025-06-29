@@ -29,13 +29,15 @@ services:
         bin/pulsar standalone
       "
     healthcheck:
-      test: >
-        CMD-SHELL
-        ADMIN_TOKEN=$(tr -d '\n' < /pulsar/conf/admin.token) &&
-        bin/pulsar-admin \
-          --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
-          --auth-params "token:${ADMIN_TOKEN}" \
-          brokers healthcheck
+      test:
+        [
+          "CMD-SHELL",
+          "ADMIN_TOKEN=$(tr -d '\\n' < /pulsar/conf/admin.token) && \
+           /pulsar/bin/pulsar-admin \
+           --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+           --auth-params \"token:${ADMIN_TOKEN}\" \
+           brokers healthcheck"
+        ]
       interval: 30s
       timeout: 10s
       retries: 6
