@@ -1,5 +1,10 @@
 import Testing
 import Foundation
+// on Linux, FoundationNetworking is a seperate library
+// so we import it here if we can
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import PulsarClient
 
 // Base test support class for integration tests
@@ -9,13 +14,13 @@ actor IntegrationTestCase {
     static let adminURL = ProcessInfo.processInfo.environment["PULSAR_ADMIN_URL"] ?? "http://localhost:8080"
     
     var client: PulsarClient? {
-        get async {
-            return _client
-        }
+        get async { _client }
     }
     
     private var _client: PulsarClient?
     private var createdTopics: [String] = []
+
+    private let urlSession = URLSession(configuration: .default)
     
     init() async throws {
         // Setup client with appropriate configuration
@@ -23,11 +28,10 @@ actor IntegrationTestCase {
     }
     
     deinit {
-        // Cleanup will be handled by test teardown
-    }
-    
-    func tearDown() async {
-        await cleanup()
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+            await cleanup()
+        }
     }
     
     private func createClient() async throws -> PulsarClient {
@@ -75,7 +79,7 @@ actor IntegrationTestCase {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await urlSession.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw IntegrationTestError.topicCreationFailed(topic)
@@ -102,7 +106,7 @@ actor IntegrationTestCase {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await urlSession.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw IntegrationTestError.topicCreationFailed(topic)
@@ -114,7 +118,7 @@ actor IntegrationTestCase {
         }
     }
     
-    private func cleanup() async {
+    func cleanup() async {
         // Close client
         if let client = _client {
             await client.dispose()
@@ -124,6 +128,9 @@ actor IntegrationTestCase {
         for topic in createdTopics {
             try? await deleteTopicViaAdmin(topic)
         }
+
+        // Make sure all outstanding HTTP work is done & the session is closed
+        urlSession.finishTasksAndInvalidate()
     }
     
     private func deleteTopicViaAdmin(_ topic: String) async throws {
@@ -139,7 +146,7 @@ actor IntegrationTestCase {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await urlSession.data(for: request)
     }
 }
 

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Apache Pulsar Standalone (for development and basic testing)
   pulsar-standalone:
@@ -17,11 +15,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 30s
     volumes:
       - pulsar-data:/pulsar/data
       - pulsar-conf:/pulsar/conf
     networks:
       - pulsar-net
+    restart: unless-stopped
 
   # Toxiproxy for network failure testing
   toxiproxy:
@@ -35,6 +35,7 @@ services:
     depends_on:
       pulsar-standalone:
         condition: service_healthy
+    restart: unless-stopped
 
   # Pulsar Manager (optional, for UI management)
   pulsar-manager:
@@ -52,6 +53,7 @@ services:
       - pulsar-net
     profiles:
       - ui
+    restart: unless-stopped
 
 volumes:
   pulsar-data:

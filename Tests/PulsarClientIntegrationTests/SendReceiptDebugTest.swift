@@ -31,6 +31,7 @@ func testSendReceiptDebug() async throws {
     
     print("\nCleaning up...")
     await producer.dispose()
+    await client.dispose()
     
     print("\n=== TEST COMPLETED SUCCESSFULLY ===\n")
 }

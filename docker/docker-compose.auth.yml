@@ -8,7 +8,7 @@ services:
       - "6651:6650"
       - "8081:8080"
     environment:
-      - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
     command: >
       bash -c "
@@ -29,15 +29,25 @@ services:
         bin/pulsar standalone
       "
     healthcheck:
-      test: ["CMD", "bin/pulsar-admin", "--auth-plugin", "org.apache.pulsar.client.impl.auth.AuthenticationToken", "--auth-params", "token:$$(cat /pulsar/conf/admin.token)", "brokers", "healthcheck"]
+      test:
+        [
+          "CMD-SHELL",
+          "ADMIN=$(tr -d '\\r\\n' < /pulsar/conf/admin.token) && \
+           /pulsar/bin/pulsar-admin \
+             --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+             --auth-params \"token:${ADMIN}\" \
+             brokers healthcheck"
+        ]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 6
+      start_period: 120s
     volumes:
       - pulsar-auth-data:/pulsar/data
       - pulsar-auth-conf:/pulsar/conf
     networks:
       - pulsar-net
+    restart: unless-stopped
 
 volumes:
   pulsar-auth-data:

@@ -11,6 +11,9 @@ actor ConnectionPool {
     internal let serviceUrl: String
     internal let authentication: Authentication?
     internal let encryptionPolicy: EncryptionPolicy
+
+    // Handle to health monitoring task
+    internal var healthMonitoringTask: Task<Void, Never>?
     
     init(serviceUrl: String, eventLoopGroup: EventLoopGroup? = nil, logger: Logger = Logger(label: "ConnectionPool"), authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted) {
         self.serviceUrl = serviceUrl
@@ -55,6 +58,9 @@ actor ConnectionPool {
     
     /// Close all connections
     func close() async {
+        healthMonitoringTask?.cancel()
+        healthMonitoringTask = nil
+
         for (_, connection) in connections {
             await connection.close()
         }
