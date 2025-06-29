@@ -28,11 +28,10 @@ actor IntegrationTestCase {
     }
     
     deinit {
-        // Cleanup will be handled by test teardown
-    }
-    
-    func tearDown() async {
-        await cleanup()
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+            await cleanup()
+        }
     }
     
     private func createClient() async throws -> PulsarClient {

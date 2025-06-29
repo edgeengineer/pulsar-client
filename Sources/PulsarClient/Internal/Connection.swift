@@ -212,6 +212,8 @@ actor Connection: PulsarConnection {
     }
     
     func close() async {
+        guard _state != .closing && _state != .closed else { return }
+        
         updateState(.closing)
         
         // Cancel all pending requests

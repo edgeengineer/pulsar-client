@@ -32,16 +32,16 @@ services:
       test:
         [
           "CMD-SHELL",
-          "ADMIN_TOKEN=$(tr -d '\\n' < /pulsar/conf/admin.token) && \
+          "ADMIN=$(tr -d '\\r\\n' < /pulsar/conf/admin.token) && \
            /pulsar/bin/pulsar-admin \
-           --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
-           --auth-params \"token:${ADMIN_TOKEN}\" \
-           brokers healthcheck"
+             --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+             --auth-params \"token:${ADMIN}\" \
+             brokers healthcheck"
         ]
       interval: 30s
       timeout: 10s
       retries: 6
-      start_period: 90s
+      start_period: 120s
     volumes:
       - pulsar-auth-data:/pulsar/data
       - pulsar-auth-conf:/pulsar/conf

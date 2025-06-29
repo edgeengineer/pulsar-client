@@ -149,8 +149,8 @@ jobs:
     - name: Get Auth Token
       id: auth
       run: |
-        TOKEN=$(docker exec pulsar-auth cat /pulsar/conf/client.token)
-        echo "token=$TOKEN" >> $GITHUB_OUTPUT
+        TOKEN=$(docker exec pulsar-auth cat /pulsar/conf/client.token | tr -d '\r\n')
+        echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
     
     - name: Run Integration Tests
       env:

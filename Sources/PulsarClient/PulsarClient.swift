@@ -152,10 +152,8 @@ public final class PulsarClient: PulsarClientProtocol {
         
         // Shutdown event loop group if we created it
         if let group = impl.eventLoopGroup as? MultiThreadedEventLoopGroup {
-            do {
-                try await group.shutdownGracefully()
-            } catch {
-                impl.logger.error("Error shutting down event loop group: \(error)")
+            await withCheckedContinuation { continuation in
+                group.shutdownGracefully { _ in continuation.resume() }
             }
         }
         
