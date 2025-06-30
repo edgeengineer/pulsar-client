@@ -123,9 +123,12 @@ actor IntegrationTestCase {
     }
     
     func cleanup() async {
+        print("[CI-Cleanup] Starting cleanup process.")
         // Close client
         if let client = _client {
+            print("[CI-Cleanup] Disposing PulsarClient.")
             await client.dispose()
+            print("[CI-Cleanup] PulsarClient disposed.")
         }
         
         // Clean up topics (optional, for clean test runs)
@@ -134,7 +137,9 @@ actor IntegrationTestCase {
         }
 
         // Make sure all outstanding HTTP work is done & the session is closed
+        print("[CI-Cleanup] Invalidating URLSession.")
         urlSession.finishTasksAndInvalidate()
+        print("[CI-Cleanup] Cleanup process finished.")
     }
     
     private func deleteTopicViaAdmin(_ topic: String) async throws {

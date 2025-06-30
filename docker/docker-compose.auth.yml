@@ -34,7 +34,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 6
-      start_period: 120s
+      start_period: 240s
     volumes:
       - pulsar-auth-data:/pulsar/data
       - pulsar-auth-conf:/pulsar/conf

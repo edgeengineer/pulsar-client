@@ -28,9 +28,10 @@ services:
       - "16650:16650"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8474/version"]
-      interval: 5s
-      timeout: 2s
+      interval: 10s
+      timeout: 5s
       retries: 10
+      start_period: 240s
     networks:
       - testing-net
 

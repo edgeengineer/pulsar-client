@@ -94,6 +94,7 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
         TOXIPROXY_URL: http://localhost:8474
+      timeout-minutes: 5
       run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup

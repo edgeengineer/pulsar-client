@@ -59,11 +59,11 @@ services:
       pulsar-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-s", "-f", "http://localhost:8000/api/v1/bookie/server_info"]
+      test: ["CMD-SHELL", "until nc -z localhost 3181; do exit 1; done"]
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 120s
+      start_period: 240s
     networks:
       - pulsar-cluster
     restart: unless-stopped
