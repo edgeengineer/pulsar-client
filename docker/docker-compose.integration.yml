@@ -27,7 +27,7 @@ services:
       - "8474:8474"
       - "16650:16650"
     healthcheck:
-      test: ["CMD", "toxiproxy-cli", "health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8474/version"]
       interval: 5s
       timeout: 2s
       retries: 10

@@ -30,15 +30,7 @@ services:
         bin/pulsar standalone
       "
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "ADMIN=$(cat /pulsar/conf/admin.token | xargs) && \
-          /pulsar/bin/pulsar-admin \
-            --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
-            --auth-params \"token:${ADMIN}\" \
-            brokers healthcheck"
-        ]
+      test: ["CMD", "curl", "-f", "http://localhost:8081/admin/v2/brokers/health"]
       interval: 30s
       timeout: 10s
       retries: 6

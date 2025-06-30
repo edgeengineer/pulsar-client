@@ -59,7 +59,7 @@ services:
       pulsar-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/3181"]
+      test: ["CMD", "curl", "-s", "-f", "http://localhost:8000/api/v1/bookie/server_info"]
       interval: 10s
       timeout: 5s
       retries: 30
