@@ -59,7 +59,7 @@ services:
       pulsar-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3181'"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/3181"]
       interval: 10s
       timeout: 5s
       retries: 30

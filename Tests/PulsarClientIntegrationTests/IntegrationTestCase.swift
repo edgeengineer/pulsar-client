@@ -20,9 +20,13 @@ actor IntegrationTestCase {
     private var _client: PulsarClient?
     private var createdTopics: [String] = []
 
-    private let urlSession = URLSession(configuration: .default)
+    private let urlSession: URLSession
     
     init() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        self.urlSession = URLSession(configuration: config)
+        
         // Setup client with appropriate configuration
         self._client = try await createClient()
     }

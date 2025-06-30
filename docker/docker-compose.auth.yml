@@ -33,11 +33,11 @@ services:
       test:
         [
           "CMD-SHELL",
-          "ADMIN=$(head -n 1 /pulsar/conf/admin.token) && \
-           /pulsar/bin/pulsar-admin \
-             --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
-             --auth-params \"token:${ADMIN}\" \
-             brokers healthcheck"
+          "ADMIN=$(cat /pulsar/conf/admin.token | xargs) && \
+          /pulsar/bin/pulsar-admin \
+            --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+            --auth-params \"token:${ADMIN}\" \
+            brokers healthcheck"
         ]
       interval: 30s
       timeout: 10s

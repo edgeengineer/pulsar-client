@@ -81,11 +81,14 @@ struct ToxiproxyClient {
 struct ToxiproxyProxy {
     let client: ToxiproxyClient
     let name: String
-    private let urlSession = URLSession(configuration: .default)
+    private let urlSession: URLSession
     
     init(client: ToxiproxyClient, name: String) {
         self.client = client
         self.name = name
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5
+        self.urlSession = URLSession(configuration: config)
     }
     
     func disable() async throws {
