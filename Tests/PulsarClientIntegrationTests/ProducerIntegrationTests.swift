@@ -3,11 +3,23 @@ import Foundation
 @testable import PulsarClient
 
 @Suite("Producer Integration Tests")
-struct ProducerIntegrationTests {
+class ProducerIntegrationTests {
     let testCase: IntegrationTestCase
     
     init() async throws {
         self.testCase = try await IntegrationTestCase()
+    }
+    
+    // deinit returns before cleanup is complete, causing hanging tests
+    // so we use a semaphore to wait for the cleanup to complete
+    // replace with "isolated deinit" in Swift 6.2
+    deinit {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task { [testCase] in
+            await testCase.cleanup()
+            semaphore.signal()
+        }
+        semaphore.wait()
     }
     
     @Test("Basic Message Send and Receive")
@@ -90,9 +102,5 @@ struct ProducerIntegrationTests {
         
         await producer.dispose()
         await consumer.dispose()
-    }
-
-    func tearDown() async {
-        await testCase.cleanup()
     }
 }

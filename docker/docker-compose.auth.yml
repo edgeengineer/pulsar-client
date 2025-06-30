@@ -18,10 +18,11 @@ services:
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         
         # Update configuration
+        ADMIN=$(cat /pulsar/conf/admin.token)
         echo 'authenticationEnabled=true' >> /pulsar/conf/standalone.conf
         echo 'authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken' >> /pulsar/conf/standalone.conf
         echo 'brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken' >> /pulsar/conf/standalone.conf
-        echo 'brokerClientAuthenticationParameters=token:$$(cat /pulsar/conf/admin.token)' >> /pulsar/conf/standalone.conf
+        echo 'brokerClientAuthenticationParameters=token:${ADMIN}' >> /pulsar/conf/standalone.conf
         echo 'tokenSecretKey=file:///pulsar/conf/secret.key' >> /pulsar/conf/standalone.conf
         echo 'superUserRoles=admin' >> /pulsar/conf/standalone.conf
         
@@ -32,7 +33,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "ADMIN=$(tr -d '\\r\\n' < /pulsar/conf/admin.token) && \
+          "ADMIN=$(head -n 1 /pulsar/conf/admin.token) && \
            /pulsar/bin/pulsar-admin \
              --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
              --auth-params \"token:${ADMIN}\" \
