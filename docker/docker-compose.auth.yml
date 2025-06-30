@@ -18,7 +18,7 @@ services:
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         
         # Update configuration
-        ADMIN=$(cat /pulsar/conf/admin.token)
+        ADMIN=$(cat /pulsar/conf/admin.token | xargs)
         echo 'authenticationEnabled=true' >> /pulsar/conf/standalone.conf
         echo 'authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken' >> /pulsar/conf/standalone.conf
         echo 'brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken' >> /pulsar/conf/standalone.conf
@@ -30,11 +30,18 @@ services:
         bin/pulsar standalone
       "
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/admin/v2/brokers/health"]
+      test:
+        [
+          "CMD-SHELL",
+          "ADMIN=$(tr -d '\\r\\n' < /pulsar/conf/admin.token) && \
+           /pulsar/bin/pulsar-admin \
+             --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+             --auth-params \"token:${ADMIN}\" \
+             brokers healthcheck"
+        ]
       interval: 30s
       timeout: 10s
       retries: 6
-      start_period: 240s
     volumes:
       - pulsar-auth-data:/pulsar/data
       - pulsar-auth-conf:/pulsar/conf

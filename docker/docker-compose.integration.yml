@@ -27,11 +27,10 @@ services:
       - "8474:8474"
       - "16650:16650"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8474/version"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "nc -z localhost 8474"]
+      interval: 5s
+      timeout: 2s
       retries: 10
-      start_period: 240s
     networks:
       - testing-net
 

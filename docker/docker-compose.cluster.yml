@@ -52,18 +52,18 @@ services:
       - PULSAR_GC=-XX:+UseG1GC
       - zkServers=zookeeper:2181
       - clusterName=cluster-a
-      - metadataServiceUri=metadata-store:zk:zookeeper:2181
+      - metadataServiceUri=zk:zookeeper:2181
     depends_on:
       zookeeper:
         condition: service_healthy
       pulsar-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "until nc -z localhost 3181; do exit 1; done"]
+      test: ["CMD-SHELL", "nc -z localhost 3181"]
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 240s
+      start_period: 120s
     networks:
       - pulsar-cluster
     restart: unless-stopped
