@@ -12,21 +12,26 @@ services:
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
     command: >
       bash -c "
+        set -e
         # Generate keys for token authentication
         bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject admin > /pulsar/conf/admin.token
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         
-        # Update configuration
-        ADMIN=$(cat /pulsar/conf/admin.token | xargs)
-        echo 'authenticationEnabled=true' >> /pulsar/conf/standalone.conf
-        echo 'authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken' >> /pulsar/conf/standalone.conf
-        echo 'brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken' >> /pulsar/conf/standalone.conf
-        echo 'brokerClientAuthenticationParameters=token:${ADMIN}' >> /pulsar/conf/standalone.conf
-        echo 'tokenSecretKey=file:///pulsar/conf/secret.key' >> /pulsar/conf/standalone.conf
-        echo 'superUserRoles=admin' >> /pulsar/conf/standalone.conf
+        # Atomically create auth config snippet
+        ADMIN_TOKEN=$(cat /pulsar/conf/admin.token | xargs)
+        cat <<EOF > /pulsar/conf/auth-settings.conf
+        authenticationEnabled=true
+        authorizationEnabled=true
+        authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken
+        brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken
+        brokerClientAuthenticationParameters=token:\${ADMIN_TOKEN}
+        tokenSecretKey=file:///pulsar/conf/secret.key
+        superUserRoles=admin
+        EOF
         
-        # Start Pulsar
+        # Append to main config and start
+        cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
         bin/pulsar standalone
       "
     healthcheck:

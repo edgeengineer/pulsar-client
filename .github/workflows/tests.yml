@@ -84,7 +84,7 @@ jobs:
           -d '{
             "name": "pulsar",
             "listen": "0.0.0.0:16650",
-            "upstream": "pulsar:6650",
+            "upstream": "localhost:6650",
             "enabled": true
           }'
         echo "Toxiproxy configured successfully"
