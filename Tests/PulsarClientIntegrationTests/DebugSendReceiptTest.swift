@@ -29,5 +29,6 @@ struct DebugSendReceiptTest {
         
         // Cleanup
         await producer.dispose()
+        await client.dispose()
     }
 }

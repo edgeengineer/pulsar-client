@@ -16,8 +16,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+      start_period: 30s
     networks:
       - pulsar-cluster
+    restart: unless-stopped
+  pulsar-init:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: pulsar-init
+    hostname: pulsar-init
+    working_dir: /pulsar
+    command: >
+      bin/pulsar initialize-cluster-metadata
+        --cluster cluster-a
+        --zookeeper zookeeper:2181
+        --configuration-store zookeeper:2181
+        --web-service-url http://broker:8080
+        --broker-service-url pulsar://broker:6650
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - pulsar-cluster
+    restart: "no"
 
   # BookKeeper
   bookkeeper:
@@ -29,18 +49,26 @@ services:
     command: bin/pulsar bookie
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_GC=-XX:+UseG1GC
       - zkServers=zookeeper:2181
       - clusterName=cluster-a
+      - metadataServiceUri=zk:zookeeper:2181
+      - journalDirectory=/pulsar/data/journal
+      - ledgersDirectory=/pulsar/data/ledgers
     depends_on:
       zookeeper:
         condition: service_healthy
+      pulsar-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "bin/bookkeeper", "shell", "bookiesanity"]
+      test: ["CMD-SHELL", "nc -z localhost 3181"]
       interval: 10s
       timeout: 5s
       retries: 30
+      start_period: 120s
     networks:
       - pulsar-cluster
+    restart: unless-stopped
 
   # Pulsar Broker
   broker:
@@ -58,15 +86,19 @@ services:
       - advertisedAddress=broker
       - advertisedListeners=pulsar://broker:6650
     depends_on:
-      - zookeeper
-      - bookkeeper
+      zookeeper:
+        condition: service_healthy
+      bookkeeper:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 30
+      start_period: 30s
     networks:
       - pulsar-cluster
+    restart: unless-stopped
 
 networks:
   pulsar-cluster:

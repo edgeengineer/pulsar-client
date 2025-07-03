@@ -8,36 +8,51 @@ services:
       - "6651:6650"
       - "8081:8080"
     environment:
-      - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
     command: >
       bash -c "
+        set -e
         # Generate keys for token authentication
         bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject admin > /pulsar/conf/admin.token
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         
-        # Update configuration
-        echo 'authenticationEnabled=true' >> /pulsar/conf/standalone.conf
-        echo 'authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken' >> /pulsar/conf/standalone.conf
-        echo 'brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken' >> /pulsar/conf/standalone.conf
-        echo 'brokerClientAuthenticationParameters=token:$$(cat /pulsar/conf/admin.token)' >> /pulsar/conf/standalone.conf
-        echo 'tokenSecretKey=file:///pulsar/conf/secret.key' >> /pulsar/conf/standalone.conf
-        echo 'superUserRoles=admin' >> /pulsar/conf/standalone.conf
+        # Atomically create auth config snippet
+        ADMIN_TOKEN=$(cat /pulsar/conf/admin.token | xargs)
+        cat <<EOF > /pulsar/conf/auth-settings.conf
+        authenticationEnabled=true
+        authorizationEnabled=true
+        authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken
+        brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken
+        brokerClientAuthenticationParameters=token:\${ADMIN_TOKEN}
+        tokenSecretKey=file:///pulsar/conf/secret.key
+        superUserRoles=admin
+        EOF
         
-        # Start Pulsar
+        # Append to main config and start
+        cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
         bin/pulsar standalone
       "
     healthcheck:
-      test: ["CMD", "bin/pulsar-admin", "--auth-plugin", "org.apache.pulsar.client.impl.auth.AuthenticationToken", "--auth-params", "token:$$(cat /pulsar/conf/admin.token)", "brokers", "healthcheck"]
+      test:
+        [
+          "CMD-SHELL",
+          "ADMIN=$(tr -d '\\r\\n' < /pulsar/conf/admin.token) && \
+           /pulsar/bin/pulsar-admin \
+             --auth-plugin org.apache.pulsar.client.impl.auth.AuthenticationToken \
+             --auth-params \"token:${ADMIN}\" \
+             brokers healthcheck"
+        ]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 6
     volumes:
       - pulsar-auth-data:/pulsar/data
       - pulsar-auth-conf:/pulsar/conf
     networks:
       - pulsar-net
+    restart: unless-stopped
 
 volumes:
   pulsar-auth-data:

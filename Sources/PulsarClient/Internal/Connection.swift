@@ -212,7 +212,7 @@ actor Connection: PulsarConnection {
     }
     
     func close() async {
-        guard _state == .connected else { return }
+        guard _state != .closing && _state != .closed else { return }
         
         updateState(.closing)
         
@@ -221,10 +221,17 @@ actor Connection: PulsarConnection {
             continuation.finish(throwing: PulsarClientError.connectionFailed("Connection closing"))
         }
         pendingRequests.removeAll()
+
+        // Close channels registered to this connection
+        await channelManager?.closeAll()
         
         // Close the channel
         try? await channel?.close()
         channel = nil
+
+        // Close any background tasks
+        backgroundProcessingTask?.cancel()
+        backgroundProcessingTask = nil
         
         updateState(.closed)
         logger.info("Connection closed")

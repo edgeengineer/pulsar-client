@@ -88,30 +88,33 @@ extension ConnectionPool {
     
     /// Monitor connection health and remove failed connections
     func startHealthMonitoring() {
-        Task {
-            while true {
-                try await Task.sleep(nanoseconds: 60_000_000_000) // Check every minute
-                
-                var failedConnections: [String] = []
-                
-                for (url, connection) in connections {
-                    let state = await connection.state
-                    switch state {
-                    case .faulted, .closed:
-                        failedConnections.append(url)
-                    default:
-                        break
+        // keep handle so it can be cancelled later
+        healthMonitoringTask = Task { [weak self] in 
+                guard let self = self else { return } 
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 60_000_000_000) // Check every minute
+                    
+                    if (Task.isCancelled) { break }
+
+                    var failed: [String] = []
+                    for (url, connection) in await self.connections {
+                        if case .faulted = await connection.state { failed.append(url) }
+                        if case .closed  = await connection.state { failed.append(url) }
                     }
-                }
-                
-                // Remove failed connections
-                for url in failedConnections {
-                    connections.removeValue(forKey: url)
-                    logger.info("Removed failed connection to \(url)")
+
+                    await self.removeConnections(failed)
                 }
             }
+    }    
+
+    /// Detached helper function to remove failed connections
+    private func removeConnections(_ urls: [String]) async {
+        for url in urls {
+            connections.removeValue(forKey: url)
+            logger.info("Removed failed connection to \(url)")
         }
     }
+    
     
     /// Get statistics about the connection pool
     func getStatistics() async -> ConnectionPoolStatistics {

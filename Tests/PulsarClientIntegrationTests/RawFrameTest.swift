@@ -34,5 +34,6 @@ struct RawFrameTest {
         
         // Cleanup
         await producer.dispose()
+        await client.dispose()
     }
 }

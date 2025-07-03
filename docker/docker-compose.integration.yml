@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  pulsar:
+    image: apachepulsar/pulsar:3.2.0
+    container_name: pulsar
+    network_mode: host
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m
+      - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+    command: bin/pulsar standalone
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.11.0
+    container_name: toxiproxy
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8474"]
+      interval: 5s
+      timeout: 2s
+      retries: 10

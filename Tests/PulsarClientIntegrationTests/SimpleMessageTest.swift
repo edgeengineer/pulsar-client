@@ -43,6 +43,6 @@ struct SimpleMessageTest {
         
         await producer.dispose()
         await consumer.dispose()
-        // Client cleanup not needed for simple test
+        await client.dispose()
     }
 }

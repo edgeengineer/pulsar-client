@@ -8,118 +8,164 @@ on:
 
 jobs:
   unit-tests:
-    name: Unit Tests
+    name: ${{ matrix.artifact-name }}
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        swift: ['6.1']
+        include:
+          - artifact-name: pulsar-client-linux-static-musl-aarch64
+            os: ubuntu-22.04-arm
+            container: swift:6.1.0
+            swift-sdk: aarch64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            product: PulsarClient
+          - artifact-name: pulsar-client-linux-static-musl-x86_64
+            os: ubuntu-22.04-arm
+            container: swift:6.1.0
+            swift-sdk: x86_64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            product: PulsarClient
+          - artifact-name: pulsar-client-macos-arm64
+            os: macos-15
+            xcode-select: /Applications/Xcode_16.3.app
+            product: PulsarClient
     
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@v2
-      with:
-        swift-version: ${{ matrix.swift }}
-    
+    - name: Install Static Linux SDK
+      if: ${{ matrix.swift-sdk-url != '' }}
+      run: |
+        swift sdk install ${{ matrix.swift-sdk-url }} --checksum ${{ matrix.swift-sdk-checksum }}
+    - name: xcode-select
+      if: ${{ matrix.xcode-select != '' }}
+      run: |
+        sudo xcode-select --switch ${{ matrix.xcode-select }}
+    - name: Build
+      shell: bash
+      run: |
+        args=(
+          --configuration release
+          --product "${{ matrix.product }}"
+        )
+
+        if [ -n "${{ matrix.swift-sdk }}" ]; then
+          args+=(--swift-sdk "${{ matrix.swift-sdk }}")
+        fi
+
+        swift build "${args[@]}"
     - name: Run Unit Tests
       run: swift test --filter PulsarClientTests
-
+    
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    
-    services:
-      pulsar:
-        image: apachepulsar/pulsar:3.2.0
-        ports:
-          - 6650:6650
-          - 8080:8080
-        options: >-
-          --health-cmd "bin/pulsar-admin brokers healthcheck"
-          --health-interval 30s
-          --health-timeout 10s
-          --health-retries 5
-    
+    strategy:
+      matrix:
+        include:
+          - swift-version: '6.1'
+            product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    
     - name: Setup Swift
-      uses: swift-actions/setup-swift@v2
+      uses: swift-actions/setup-swift@next
       with:
-        swift-version: '6.1'
+        swift-version: ${{ matrix.swift-version }}
+
+    - name: Start Pulsar and Toxiproxy
+      run: docker compose -f docker/docker-compose.integration.yml up -d --wait
     
-    - name: Wait for Pulsar
+    - name: Configure Toxiproxy
       run: |
-        until curl -s http://localhost:8080/admin/v2/brokers/health; do
-          echo "Waiting for Pulsar..."
-          sleep 5
-        done
+        curl -X POST http://localhost:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "name": "pulsar",
+            "listen": "0.0.0.0:16650",
+            "upstream": "localhost:6650",
+            "enabled": true
+          }'
+        echo "Toxiproxy configured successfully"
     
     - name: Run Integration Tests
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
-      run: swift test --filter IntegrationTests
+        TOXIPROXY_URL: http://localhost:8474
+      timeout-minutes: 5
+      run: swift test --filter PulsarClientIntegrationTests
+    
+    - name: Cleanup
+      if: always()
+      run: docker compose -f docker/docker-compose.integration.yml down -v
 
   integration-tests-auth:
     name: Integration Tests with Authentication
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        include:
+          - swift-version: '6.1'
+            product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    
     - name: Setup Swift
-      uses: swift-actions/setup-swift@v2
+      uses: swift-actions/setup-swift@next
       with:
-        swift-version: '6.1'
+        swift-version: ${{ matrix.swift-version }}
     
     - name: Start Pulsar with Auth
       run: |
-        docker-compose -f docker/docker-compose.auth.yml up -d
-        ./scripts/test-env.sh wait --timeout 120
+        docker compose -f docker/docker-compose.auth.yml up -d --wait
+        echo "Waiting for Pulsar Admin API to be fully ready..."
+        timeout 120 bash -c 'until curl -s -f -o /dev/null http://localhost:8081/admin/v2/brokers/health; do sleep 5; done'
     
     - name: Get Auth Token
       id: auth
       run: |
-        TOKEN=$(docker exec pulsar-auth cat /pulsar/conf/client.token)
-        echo "token=$TOKEN" >> $GITHUB_OUTPUT
+        TOKEN=$(docker exec pulsar-auth cat /pulsar/conf/client.token | xargs)
+        echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
     
     - name: Run Integration Tests
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6651
         PULSAR_ADMIN_URL: http://localhost:8081
         PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-      run: swift test --filter IntegrationTests
+      run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
       if: always()
-      run: docker-compose -f docker/docker-compose.auth.yml down -v
+      run: docker compose -f docker/docker-compose.auth.yml down -v
 
   integration-tests-cluster:
     name: Integration Tests with Cluster
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        include:
+          - swift-version: '6.1'
+            product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    
     - name: Setup Swift
-      uses: swift-actions/setup-swift@v2
+      uses: swift-actions/setup-swift@next
       with:
-        swift-version: '6.1'
+        swift-version: ${{ matrix.swift-version }}
     
     - name: Start Pulsar Cluster
       run: |
-        docker-compose -f docker/docker-compose.cluster.yml up -d
-        ./scripts/test-env.sh wait --cluster --timeout 180
+        docker compose -f docker/docker-compose.cluster.yml up -d --wait
+        echo "Waiting for Pulsar Admin API to be fully ready..."
+        timeout 120 bash -c 'until curl -s -f -o /dev/null http://localhost:8080/admin/v2/brokers/health; do sleep 5; done'
     
     - name: Run Integration Tests
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
-      run: swift test --filter IntegrationTests
+      run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
       if: always()
-      run: docker-compose -f docker/docker-compose.cluster.yml down -v
+      run: docker compose -f docker/docker-compose.cluster.yml down -v
