@@ -120,7 +120,7 @@ actor Connection: PulsarConnection {
             frameHandler.setConnectedHandler { [weak self] frame in
                 guard let self = self else { return }
                 Task {
-                    await self.logger.debug("CONNECTED handler called - Server version: \(frame.command.connected.serverVersion)")
+                    self.logger.debug("CONNECTED handler called - Server version: \(frame.command.connected.serverVersion)")
                     await self.updateState(.connected)
                     await self.setConnectedAt(Date())
                 }
@@ -283,7 +283,7 @@ actor Connection: PulsarConnection {
             totalBytesSent += UInt64(data.count)
         }
         
-        try await channel.writeAndFlush(NIOAny(frame))
+        try await channel.writeAndFlush(frame)
         
         // Update statistics
         totalMessagesSent += 1
@@ -295,7 +295,7 @@ actor Connection: PulsarConnection {
         logger.info("Creating background processing task")
         backgroundProcessingTask = Task.detached { [weak self] in
             guard let self = self else { return }
-            await self.logger.info("Background processing task started")
+            self.logger.info("Background processing task started")
             await self.markFrameProcessingStarted()
             await self.processIncomingFramesContinuously()
         }
@@ -360,7 +360,7 @@ actor Connection: PulsarConnection {
             }
             
             // Process all other frames through the enhanced handler
-            await handleIncomingFrame(frame)
+            handleIncomingFrame(frame)
             
             // Exit if connection is no longer active
             if _state == .closed || _state == .closing {
@@ -376,7 +376,7 @@ actor Connection: PulsarConnection {
 
 // MARK: - Raw Data Logger
 
-final class RawDataLogger: ChannelDuplexHandler {
+final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = ByteBuffer
     typealias OutboundIn = ByteBuffer
@@ -419,7 +419,7 @@ final class RawDataLogger: ChannelDuplexHandler {
 
 // MARK: - Frame Codec
 
-final class PulsarFrameByteDecoder: ByteToMessageDecoder {
+final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
     typealias InboundOut = PulsarFrame
     
     private let frameDecoder = PulsarFrameDecoder()
@@ -463,7 +463,7 @@ final class PulsarFrameByteDecoder: ByteToMessageDecoder {
     }
 }
 
-final class PulsarFrameByteEncoder: MessageToByteEncoder {
+final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
     typealias OutboundIn = PulsarFrame
     
     private let frameEncoder = PulsarFrameEncoder()
@@ -503,7 +503,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         if frame.command.type == .connected {
             if let connection = connection {
                 Task {
-                    await connection.logger.debug("CONNECTED frame received - serverVersion=\(frame.command.connected.serverVersion), protocolVersion=\(frame.command.connected.protocolVersion)")
+                    connection.logger.debug("CONNECTED frame received - serverVersion=\(frame.command.connected.serverVersion), protocolVersion=\(frame.command.connected.protocolVersion)")
                 }
             }
             
@@ -524,7 +524,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         if let connection = connection {
             Task {
-                await connection.logger.error("PulsarFrameHandler error: \(error)")
+                connection.logger.error("PulsarFrameHandler error: \(error)")
             }
         }
         frameStreamContinuation.finish()
@@ -534,7 +534,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelInactive(context: ChannelHandlerContext) {
         if let connection = connection {
             Task {
-                await connection.logger.warning("PulsarFrameHandler channel became inactive")
+                connection.logger.warning("PulsarFrameHandler channel became inactive")
             }
         }
         frameStreamContinuation.finish()
@@ -543,7 +543,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelActive(context: ChannelHandlerContext) {
         if let connection = connection {
             Task {
-                await connection.logger.info("PulsarFrameHandler channel is active")
+                connection.logger.info("PulsarFrameHandler channel is active")
             }
         }
     }

@@ -74,7 +74,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     public nonisolated func onStateChange(_ handler: @escaping @Sendable (ClientState) -> Void) {
         Task { [weak self] in
             guard let self = self else { return }
-            for await state in await self.stateStream {
+            for await state in self.stateStream {
                 handler(state)
             }
         }
@@ -106,7 +106,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             group.addTask { [weak self] in
                 guard let self = self else { throw PulsarClientError.clientClosed }
                 
-                for await currentState in await self.stateStream {
+                for await currentState in self.stateStream {
                     if currentState == state {
                         return currentState
                     }
@@ -136,7 +136,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             group.addTask { [weak self] in
                 guard let self = self else { throw PulsarClientError.clientClosed }
                 
-                for await currentState in await self.stateStream {
+                for await currentState in self.stateStream {
                     if currentState != state {
                         return currentState
                     }
