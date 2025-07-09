@@ -159,7 +159,7 @@ public struct PulsarFrameDecoder {
         
         // Read command
         let commandData = data.subdata(in: 8..<(8 + Int(commandSize)))
-        let command = try Pulsar_Proto_BaseCommand(serializedData: commandData)
+        let command = try Pulsar_Proto_BaseCommand(serializedBytes: [UInt8](commandData))
         
         var offset = 8 + Int(commandSize)
         var metadata: Pulsar_Proto_MessageMetadata?
@@ -196,7 +196,7 @@ public struct PulsarFrameDecoder {
             if metadataSize > 0 && offset + Int(metadataSize) <= data.count {
                 // Read metadata
                 let metadataData = data.subdata(in: offset..<(offset + Int(metadataSize)))
-                metadata = try Pulsar_Proto_MessageMetadata(serializedData: metadataData)
+                metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: [UInt8](metadataData))
                 offset += Int(metadataSize)
                 
                 // Read payload if present
