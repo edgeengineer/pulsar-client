@@ -1,9 +1,10 @@
 import Foundation
+import Logging
 import NIOCore
 import NIOPosix
 import NIOSSL
 import NIO
-import Logging
+
 
 /// Connection state
 public enum ConnectionState: Equatable, Sendable {
@@ -503,7 +504,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         if frame.command.type == .connected {
             if let connection = connection {
                 Task {
-                    connection.logger.debug("CONNECTED frame received - serverVersion=\(frame.command.connected.serverVersion), protocolVersion=\(frame.command.connected.protocolVersion)")
+                    connection.logger.debug("CONNECTED frame received", metadata: ["serverVersion": "\(frame.command.connected.serverVersion)", "protocolVersion": "\(frame.command.connected.protocolVersion)"])
                 }
             }
             
