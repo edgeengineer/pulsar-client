@@ -345,7 +345,7 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
             producer.schema = protoSchema
         }
         
-        if let initialSequenceId = initialSequenceId {
+        if initialSequenceId != nil {
             // Note: initialSequenceID might be named differently in the proto
             // producer.initialSequenceID = initialSequenceId
         }
@@ -533,6 +533,23 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
         close.requestID = nextRequestId()
         
         command.closeProducer = close
+        return command
+    }
+    
+    /// Create AUTH_RESPONSE command
+    public func authResponse(
+        clientVersion: String = "PulsarClient-Swift/1.0.0",
+        response: Pulsar_Proto_AuthData
+    ) -> Pulsar_Proto_BaseCommand {
+        var command = Pulsar_Proto_BaseCommand()
+        command.type = .authResponse
+        
+        var authResponse = Pulsar_Proto_CommandAuthResponse()
+        authResponse.clientVersion = clientVersion
+        authResponse.response = response
+        authResponse.protocolVersion = PulsarProtocol.protocolVersion
+        
+        command.authResponse = authResponse
         return command
     }
     

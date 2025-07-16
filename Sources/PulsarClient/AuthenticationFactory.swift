@@ -56,33 +56,6 @@ public enum AuthenticationFactory {
         return OAuth2Authentication(configuration: configuration)
     }
     
-    /// Create an OAuth2 authentication provider using client credentials with private key JWT.
-    /// - Parameters:
-    ///   - issuerUrl: The OAuth2 token issuer URL
-    ///   - clientId: The client identifier
-    ///   - privateKey: The private key data for JWT signing
-    ///   - keyId: The key identifier
-    ///   - audience: Optional audience parameter
-    ///   - scope: Optional scope parameter
-    /// - Returns: An OAuth2 authentication instance
-    public static func oauth2(
-        issuerUrl: URL,
-        clientId: String,
-        privateKey: Data,
-        keyId: String,
-        audience: String? = nil,
-        scope: String? = nil
-    ) -> Authentication {
-        let configuration = OAuth2Configuration(
-            issuerUrl: issuerUrl,
-            clientId: clientId,
-            audience: audience,
-            scope: scope,
-            privateKey: privateKey,
-            keyId: keyId
-        )
-        return OAuth2Authentication(configuration: configuration)
-    }
     
     /// Create a TLS authentication provider using certificate and private key files.
     /// - Parameters:
@@ -159,8 +132,6 @@ public extension AuthenticationFactory {
             let issuerUrl: String
             let clientId: String
             let clientSecret: String?
-            let privateKey: String?
-            let keyId: String?
             let audience: String?
             let scope: String?
         }
@@ -176,9 +147,7 @@ public extension AuthenticationFactory {
             clientId: credentials.clientId,
             clientSecret: credentials.clientSecret,
             audience: credentials.audience,
-            scope: credentials.scope,
-            privateKey: credentials.privateKey?.data(using: .utf8),
-            keyId: credentials.keyId
+            scope: credentials.scope
         )
         
         return OAuth2Authentication(configuration: configuration)

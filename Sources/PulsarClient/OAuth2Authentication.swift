@@ -4,7 +4,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public final class OAuth2Authentication: Authentication, @unchecked Sendable {
+public final class OAuth2Authentication: Authentication, Sendable {
   public let authenticationMethodName = "token"
 
   private let configuration: OAuth2Configuration
@@ -19,6 +19,10 @@ public final class OAuth2Authentication: Authentication, @unchecked Sendable {
     let token = try await tokenProvider.getToken()
     return Data(token.utf8)
   }
+  
+  public func needsRefresh() async -> Bool {
+    return await tokenProvider.needsRefresh()
+  }
 }
 
 public struct OAuth2Configuration: Sendable {
@@ -27,25 +31,19 @@ public struct OAuth2Configuration: Sendable {
   public let clientSecret: String?
   public let audience: String?
   public let scope: String?
-  public let privateKey: Data?
-  public let keyId: String?
 
   public init(
     issuerUrl: URL,
     clientId: String,
     clientSecret: String? = nil,
     audience: String? = nil,
-    scope: String? = nil,
-    privateKey: Data? = nil,
-    keyId: String? = nil
+    scope: String? = nil
   ) {
     self.issuerUrl = issuerUrl
     self.clientId = clientId
     self.clientSecret = clientSecret
     self.audience = audience
     self.scope = scope
-    self.privateKey = privateKey
-    self.keyId = keyId
   }
 }
 
@@ -67,6 +65,14 @@ actor OAuth2TokenProvider {
     let token = try await fetchToken()
     cachedToken = token
     return token.accessToken
+  }
+  
+  func needsRefresh() -> Bool {
+    guard let cached = cachedToken else {
+      return true // No token, needs refresh
+    }
+    // Refresh if token will expire in next 5 minutes
+    return cached.expiresAt.timeIntervalSinceNow < 300
   }
 
   private func fetchToken() async throws -> OAuth2Token {
@@ -91,13 +97,6 @@ actor OAuth2TokenProvider {
       parameters["scope"] = scope
     }
 
-    if let privateKey = configuration.privateKey,
-      let keyId = configuration.keyId
-    {
-      let assertion = try createJWTAssertion(privateKey: privateKey, keyId: keyId)
-      parameters["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-      parameters["client_assertion"] = assertion
-    }
 
     let bodyString =
       parameters
@@ -131,9 +130,6 @@ actor OAuth2TokenProvider {
     }
   }
 
-  private func createJWTAssertion(privateKey: Data, keyId: String) throws -> String {
-    throw PulsarClientError.authenticationFailed("JWT assertion not yet implemented")
-  }
 }
 
 struct OAuth2Token {

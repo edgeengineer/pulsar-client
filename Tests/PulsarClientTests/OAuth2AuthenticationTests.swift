@@ -32,25 +32,8 @@ struct OAuth2AuthenticationTests {
     #expect(config.clientSecret == "test-secret")
     #expect(config.audience == "https://example.com/api")
     #expect(config.scope == "read write")
-    #expect(config.privateKey == nil)
-    #expect(config.keyId == nil)
   }
 
-  @Test("OAuth2 Configuration with Private Key")
-  func testOAuth2ConfigurationWithPrivateKey() {
-    let privateKeyData = "private-key-data".data(using: .utf8)!
-    let config = OAuth2Configuration(
-      issuerUrl: URL(string: "https://example.com/oauth/token")!,
-      clientId: "test-client",
-      privateKey: privateKeyData,
-      keyId: "key-123"
-    )
-
-    #expect(config.clientId == "test-client")
-    #expect(config.clientSecret == nil)
-    #expect(config.privateKey == privateKeyData)
-    #expect(config.keyId == "key-123")
-  }
 
   @Test("Authentication Factory OAuth2 Methods")
   func testAuthenticationFactoryOAuth2Methods() {
@@ -72,21 +55,13 @@ struct OAuth2AuthenticationTests {
     )
     #expect(auth2 is OAuth2Authentication)
 
-    let privateKey = "key-data".data(using: .utf8)!
-    let auth3 = AuthenticationFactory.oauth2(
-      issuerUrl: issuerUrl,
-      clientId: "client3",
-      privateKey: privateKey,
-      keyId: "key-456"
-    )
-    #expect(auth3 is OAuth2Authentication)
 
     let config = OAuth2Configuration(
       issuerUrl: issuerUrl,
-      clientId: "client4"
+      clientId: "client3"
     )
-    let auth4 = AuthenticationFactory.oauth2(config)
-    #expect(auth4 is OAuth2Authentication)
+    let auth3 = AuthenticationFactory.oauth2(config)
+    #expect(auth3 is OAuth2Authentication)
   }
 
   @Test("OAuth2 Token Expiration")

@@ -50,7 +50,7 @@ actor Connection: PulsarConnection {
     private let eventLoopGroup: EventLoopGroup
     private var channel: NIOCore.Channel?
     internal var commandBuilder = PulsarCommandBuilder()
-    private let authentication: Authentication?
+    internal let authentication: Authentication?
     private let encryptionPolicy: EncryptionPolicy
     
     private var _state: ConnectionState = .disconnected
@@ -62,6 +62,7 @@ actor Connection: PulsarConnection {
     internal var channelManager: ChannelManager?
     private var backgroundProcessingTask: Task<Void, Never>?
     private var frameProcessingStarted = false
+    private var authRefreshTask: Task<Void, Never>?
     
     // Statistics tracking
     internal var connectedAt: Date?
@@ -192,6 +193,9 @@ actor Connection: PulsarConnection {
                 }
                 logger.info("CONNECTED response received successfully")
                 logger.info("Successfully connected to Pulsar at \(url.host):\(url.port)")
+                
+                // Start authentication refresh task if needed
+                startAuthenticationRefreshTask()
             } catch {
                 logger.error("Connection failed: \(error)")
                 throw error
@@ -233,6 +237,8 @@ actor Connection: PulsarConnection {
         // Close any background tasks
         backgroundProcessingTask?.cancel()
         backgroundProcessingTask = nil
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
         
         updateState(.closed)
         logger.info("Connection closed")
@@ -371,6 +377,57 @@ actor Connection: PulsarConnection {
         }
         
         logger.info("Frame processing loop ended after \(frameCount) frames")
+    }
+    
+    // MARK: - Authentication Refresh
+    
+    /// Start authentication refresh task if authentication supports it
+    private func startAuthenticationRefreshTask() {
+        guard let auth = authentication else { return }
+        
+        authRefreshTask = Task { [weak self] in
+            guard let self = self else { return }
+            
+            logger.info("Starting authentication refresh task")
+            
+            while !Task.isCancelled {
+                let currentState = await self._state
+                guard currentState == .connected else { break }
+                do {
+                    // Check if authentication needs refresh
+                    if await auth.needsRefresh() {
+                        logger.info("Authentication needs refresh")
+                        
+                        // Get fresh authentication data
+                        let authData = try await auth.getAuthenticationData()
+                        
+                        // Create auth data
+                        var authDataProto = Pulsar_Proto_AuthData()
+                        authDataProto.authMethodName = auth.authenticationMethodName
+                        authDataProto.authData = authData
+                        
+                        // Send auth response (broker will validate and update)
+                        let authResponse = await commandBuilder.authResponse(response: authDataProto)
+                        let frame = PulsarFrame(command: authResponse)
+                        
+                        try await sendFrame(frame)
+                        logger.info("Sent refreshed authentication data")
+                    }
+                    
+                    // Wait before next check (30 seconds)
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                    
+                } catch {
+                    if !Task.isCancelled {
+                        logger.error("Authentication refresh failed: \(error)")
+                        // Continue trying unless task is cancelled
+                        try? await Task.sleep(nanoseconds: 5_000_000_000) // Wait 5 seconds before retry
+                    }
+                }
+            }
+            
+            logger.info("Authentication refresh task ended")
+        }
     }
     
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-public final class TLSAuthentication: Authentication, @unchecked Sendable {
+public final class TLSAuthentication: Authentication, Sendable {
   public let authenticationMethodName = "tls"
 
   private let configuration: TLSConfiguration
