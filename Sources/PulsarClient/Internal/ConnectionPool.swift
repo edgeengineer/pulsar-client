@@ -11,16 +11,18 @@ actor ConnectionPool {
     internal let serviceUrl: String
     internal let authentication: Authentication?
     internal let encryptionPolicy: EncryptionPolicy
+    internal let pingIntervalNanos: UInt64
 
     // Handle to health monitoring task
     internal var healthMonitoringTask: Task<Void, Never>?
     
-    init(serviceUrl: String, eventLoopGroup: EventLoopGroup? = nil, logger: Logger = Logger(label: "ConnectionPool"), authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted) {
+    init(serviceUrl: String, eventLoopGroup: EventLoopGroup? = nil, logger: Logger = Logger(label: "ConnectionPool"), authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted, pingIntervalNanos: UInt64 = 30_000_000_000) {
         self.serviceUrl = serviceUrl
         self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
         self.logger = logger
         self.authentication = authentication
         self.encryptionPolicy = encryptionPolicy
+        self.pingIntervalNanos = pingIntervalNanos
     }
     
     /// Get or create a connection for the given broker URL
@@ -42,7 +44,7 @@ actor ConnectionPool {
         
         // Create new connection
         let url = try PulsarURL(string: brokerUrl)
-        let connection = Connection(url: url, eventLoopGroup: eventLoopGroup, logger: logger, authentication: authentication, encryptionPolicy: encryptionPolicy)
+        let connection = Connection(url: url, eventLoopGroup: eventLoopGroup, logger: logger, authentication: authentication, encryptionPolicy: encryptionPolicy, pingIntervalNanos: pingIntervalNanos)
         connections[brokerUrl] = connection
         
         do {
