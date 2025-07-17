@@ -70,30 +70,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Check port usage
-      run: |
-        echo "=== Ports in use ==="
-        netstat -tulpn 2>/dev/null | grep -E ":(6650|8080|8081|8474|8475|16650)" || echo "No conflicting ports found"
-        echo "=== Available ports ==="
-        for port in 8080 8081 8474 8475; do
-          if nc -z localhost $port 2>/dev/null; then
-            echo "Port $port is in use"
-          else
-            echo "Port $port is available"
-          fi
-        done
     - name: Start Pulsar and Toxiproxy
-      run: docker compose -f docker/docker-compose.integration.yml up -d
-      continue-on-error: true
+      run: docker compose -f docker/docker-compose.integration.yml up -d --wait
+    #   continue-on-error: true
 
-    - name: Check container status and logs
-      run: |
-        echo "=== Container Status ==="
-        docker ps -a
-        echo "=== Pulsar Logs ==="
-        docker logs pulsar 2>&1 || echo "No pulsar logs available"
-        echo "=== Toxiproxy Logs ==="
-        docker logs toxiproxy 2>&1 || echo "No toxiproxy logs available"
+    # - name: Check container status and logs
+    #   run: |
+    #     echo "=== Container Status ==="
+    #     docker ps -a
+    #     echo "=== Pulsar Logs ==="
+    #     docker logs pulsar 2>&1 || echo "No pulsar logs available"
+    #     echo "=== Toxiproxy Logs ==="
+    #     docker logs toxiproxy 2>&1 || echo "No toxiproxy logs available"
     
     - name: Configure Toxiproxy
       run: |
@@ -112,7 +100,7 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8081
         TOXIPROXY_URL: http://localhost:8475
-      timeout-minutes: 5
+      timeout-minutes: 20
       run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
