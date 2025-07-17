@@ -135,6 +135,7 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6651
         PULSAR_ADMIN_URL: http://localhost:8081
         PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+      timeout-minutes: 20
       run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
