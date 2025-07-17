@@ -117,10 +117,6 @@ jobs:
             product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@next
-      with:
-        swift-version: ${{ matrix.swift-version }}
     
     - name: Start Pulsar with Auth
       run: |
@@ -155,11 +151,6 @@ jobs:
             product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@next
-      with:
-        swift-version: ${{ matrix.swift-version }}
-    
     - name: Start Pulsar Cluster
       run: |
         docker compose -f docker/docker-compose.cluster.yml up -d --wait
@@ -170,6 +161,7 @@ jobs:
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
+      timeout-minutes: 20
       run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
