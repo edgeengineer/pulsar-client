@@ -1,13 +1,14 @@
-version: '3.8'
-
 services:
   pulsar:
     image: apachepulsar/pulsar:3.2.0
     container_name: pulsar
-    network_mode: host
+    ports:
+      - "6650:6650"
+      - "8080:8080"
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+      - PULSAR_STANDALONE_RESET=true  # ← Force reset on startup
     command: bin/pulsar standalone
     healthcheck:
       test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
@@ -15,13 +16,16 @@ services:
       timeout: 5s
       retries: 30
       start_period: 120s
+    volumes:
+      - /tmp/pulsar-data:/pulsar/data  # ← Use temp storage for CI
 
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.11.0
     container_name: toxiproxy
-    network_mode: host
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8474"]
-      interval: 5s
-      timeout: 2s
-      retries: 10
+    ports:
+      - "8474:8474"
+      - "16650:16650"
+    # No healthcheck possible - this is a distroless container
+    depends_on:
+      pulsar:
+        condition: service_healthy

@@ -15,14 +15,14 @@ jobs:
       matrix:
         include:
           - artifact-name: pulsar-client-linux-static-musl-aarch64
-            os: ubuntu-22.04-arm
+            os: ubuntu-24.04-arm
             container: swift:6.1.0
             swift-sdk: aarch64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
             product: PulsarClient
           - artifact-name: pulsar-client-linux-static-musl-x86_64
-            os: ubuntu-22.04-arm
+            os: ubuntu-24.04-arm
             container: swift:6.1.0
             swift-sdk: x86_64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
@@ -69,10 +69,6 @@ jobs:
             product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@next
-      with:
-        swift-version: ${{ matrix.swift-version }}
 
     - name: Start Pulsar and Toxiproxy
       run: docker compose -f docker/docker-compose.integration.yml up -d --wait
