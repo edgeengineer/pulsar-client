@@ -13,6 +13,7 @@
  */
 
 import Foundation
+import Atomics
 
 /// The producer building options.
 public struct ProducerOptions<TMessage>: Sendable where TMessage: Sendable {
@@ -261,15 +262,11 @@ public struct RoundRobinMessageRouter: MessageRouter {
 }
 
 // Thread-safe atomic counter for round-robin routing
-private final class AtomicCounter: @unchecked Sendable {
-    private var value: UInt64 = 0
-    private let lock = NSLock()
-    
+final class AtomicCounter: Sendable {
+    private let value = ManagedAtomic<UInt64>(0)
+
     func increment() -> UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        value += 1
-        return value
+        return value.wrappingIncrementThenLoad(ordering: .relaxed)
     }
 }
 

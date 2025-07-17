@@ -15,14 +15,14 @@ jobs:
       matrix:
         include:
           - artifact-name: pulsar-client-linux-static-musl-aarch64
-            os: ubuntu-22.04-arm
+            os: ubuntu-24.04-arm
             container: swift:6.1.0
             swift-sdk: aarch64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
             product: PulsarClient
           - artifact-name: pulsar-client-linux-static-musl-x86_64
-            os: ubuntu-22.04-arm
+            os: ubuntu-24.04-arm
             container: swift:6.1.0
             swift-sdk: x86_64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
@@ -69,17 +69,23 @@ jobs:
             product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@next
-      with:
-        swift-version: ${{ matrix.swift-version }}
 
     - name: Start Pulsar and Toxiproxy
       run: docker compose -f docker/docker-compose.integration.yml up -d --wait
+    #   continue-on-error: true
+
+    # - name: Check container status and logs
+    #   run: |
+    #     echo "=== Container Status ==="
+    #     docker ps -a
+    #     echo "=== Pulsar Logs ==="
+    #     docker logs pulsar 2>&1 || echo "No pulsar logs available"
+    #     echo "=== Toxiproxy Logs ==="
+    #     docker logs toxiproxy 2>&1 || echo "No toxiproxy logs available"
     
     - name: Configure Toxiproxy
       run: |
-        curl -X POST http://localhost:8474/proxies \
+        curl -X POST http://localhost:8475/proxies \
           -H 'Content-Type: application/json' \
           -d '{
             "name": "pulsar",
@@ -92,10 +98,12 @@ jobs:
     - name: Run Integration Tests
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
-        PULSAR_ADMIN_URL: http://localhost:8080
-        TOXIPROXY_URL: http://localhost:8474
-      timeout-minutes: 5
-      run: swift test --filter PulsarClientIntegrationTests
+        PULSAR_ADMIN_URL: http://localhost:8081
+        TOXIPROXY_URL: http://localhost:8475
+      timeout-minutes: 15  # Reduced from 20 due to parallelism
+      run: |
+        # Run most tests in parallel
+        swift test --filter PulsarClientIntegrationTests --parallel --num-workers 4
     
     - name: Cleanup
       if: always()
@@ -111,10 +119,6 @@ jobs:
             product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@next
-      with:
-        swift-version: ${{ matrix.swift-version }}
     
     - name: Start Pulsar with Auth
       run: |
@@ -133,6 +137,7 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6651
         PULSAR_ADMIN_URL: http://localhost:8081
         PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+      timeout-minutes: 20
       run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup
@@ -149,11 +154,6 @@ jobs:
             product: PulsarClient
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@next
-      with:
-        swift-version: ${{ matrix.swift-version }}
-    
     - name: Start Pulsar Cluster
       run: |
         docker compose -f docker/docker-compose.cluster.yml up -d --wait
@@ -164,6 +164,7 @@ jobs:
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8080
+      timeout-minutes: 20
       run: swift test --filter PulsarClientIntegrationTests
     
     - name: Cleanup

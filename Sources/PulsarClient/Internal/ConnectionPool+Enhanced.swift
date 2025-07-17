@@ -44,7 +44,7 @@ extension ConnectionPool {
                         proxyThroughServiceUrl: lookupResponse.proxyThroughServiceUrl
                     )
                     
-                case .redirect(let brokerUrl, let brokerUrlTls):
+                case .redirect(let brokerUrl, _):
                     // Need to connect to a different broker for lookup
                     logger.info("Redirected to \(brokerUrl) for topic \(topic)")
                     
@@ -208,8 +208,6 @@ private func mapServerError(_ error: Pulsar_Proto_ServerError) -> Error {
         return PulsarClientError.transactionNotFound
     case .producerFenced:
         return PulsarClientError.producerBusy("Producer fenced")
-    default:
-        return PulsarClientError.unknownError("Unknown server error: \(error)")
     }
 }
 

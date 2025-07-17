@@ -534,35 +534,49 @@ extension Connection {
     /// Monitor connection health and handle reconnection
     private func monitorConnectionHealth() async {
         while !Task.isCancelled {
-            let currentState = state
-            
-            switch currentState {
-            case .connected:
-                await performHealthCheck()
+            await withTaskCancellationHandler {
+                // Wait for the ping interval, but respond to cancellation immediately
+                do {
+                    try await Task.sleep(nanoseconds: pingIntervalNanos)
+                } catch {
+                    // Task was cancelled, exit gracefully
+                    return
+                }
                 
-            case .faulted(let error):
-                await handleConnectionFault(error)
+                let currentState = state
                 
-            case .disconnected:
-                // Try to reconnect
-                await attemptReconnection()
-                
-            case .reconnecting:
-                // Wait for reconnection to complete
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
-                
-            default:
-                // Wait before next check
-                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+                switch currentState {
+                case .connected:
+                    await sendPingIfNeeded()
+                    
+                case .faulted(let error):
+                    await handleConnectionFault(error)
+                    
+                case .disconnected:
+                    // Try to reconnect
+                    await attemptReconnection()
+                    
+                case .reconnecting:
+                    // Continue monitoring, reconnection will update state
+                    break
+                    
+                case .closed, .closing:
+                    // Stop monitoring
+                    return
+                    
+                default:
+                    // Continue monitoring
+                    break
+                }
+            } onCancel: {
+                // This runs immediately when the task is cancelled
+                logger.debug("Connection health monitoring cancelled")
             }
         }
     }
     
-    /// Perform health check with ping
-    private func performHealthCheck() async {
-        // Send ping every 30 seconds
-        try? await Task.sleep(nanoseconds: 30_000_000_000)
-        
+    /// Send ping for health check if connection is still active
+    private func sendPingIfNeeded() async {
         let currentState = state
         guard currentState == .connected else { return }
         
@@ -615,8 +629,17 @@ extension Connection {
             logger.error("Automatic reconnection failed: \(error)")
             updateState(.faulted(error))
             
-            // Wait before next attempt
-            try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+            // Wait before next attempt, but allow immediate cancellation
+            await withTaskCancellationHandler {
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+                } catch {
+                    // Cancellation - exit gracefully
+                    return
+                }
+            } onCancel: {
+                logger.debug("Reconnection attempt cancelled")
+            }
         }
     }
     
