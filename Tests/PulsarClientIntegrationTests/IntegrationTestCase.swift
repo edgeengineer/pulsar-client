@@ -41,6 +41,7 @@ actor IntegrationTestCase {
     private func createClient() async throws -> PulsarClient {
         let builder = PulsarClientBuilder()
             .withServiceUrl(Self.serviceURL)
+            .withPingInterval(seconds: 1.0)  // Use 1 second ping interval for tests
         
         // Add authentication if token is provided
         if let token = ProcessInfo.processInfo.environment["PULSAR_AUTH_TOKEN"] {

@@ -85,7 +85,8 @@ public final class PulsarClient: PulsarClientProtocol {
             eventLoopGroup: eventLoopGroup,
             logger: configuration.logger,
             authentication: configuration.authentication,
-            encryptionPolicy: configuration.encryptionPolicy
+            encryptionPolicy: configuration.encryptionPolicy,
+            pingIntervalNanos: configuration.pingIntervalNanos
         )
         
         self.implementation = Implementation(
@@ -356,6 +357,7 @@ public final class PulsarClientBuilder {
     internal var authentication: Authentication?
     internal var encryptionPolicy: EncryptionPolicy = .preferUnencrypted
     internal var operationTimeout: TimeInterval = 30.0
+    internal var pingIntervalNanos: UInt64 = 30_000_000_000  // 30 seconds
     
     /// Initialize a new PulsarClientBuilder
     public init() {}
@@ -400,6 +402,22 @@ public final class PulsarClientBuilder {
         return self
     }
     
+    /// Set the ping interval for connection health checks
+    /// - Parameter intervalNanos: The ping interval in nanoseconds
+    @discardableResult
+    public func withPingInterval(nanos intervalNanos: UInt64) -> PulsarClientBuilder {
+        self.pingIntervalNanos = intervalNanos
+        return self
+    }
+    
+    /// Set the ping interval for connection health checks
+    /// - Parameter seconds: The ping interval in seconds
+    @discardableResult
+    public func withPingInterval(seconds: Double) -> PulsarClientBuilder {
+        self.pingIntervalNanos = UInt64(seconds * 1_000_000_000)
+        return self
+    }
+    
     /// Build the PulsarClient
     /// - Returns: A new PulsarClient instance
     public func build() -> PulsarClient {
@@ -421,6 +439,7 @@ public final class PulsarClientBuilder {
             tlsValidateHostname: true,
             enableTransaction: false,
             statsInterval: 60.0,
+            pingIntervalNanos: pingIntervalNanos,
             logger: logger,
             eventLoopGroup: nil
         )
@@ -444,6 +463,7 @@ struct ClientConfiguration {
     let tlsValidateHostname: Bool
     let enableTransaction: Bool
     let statsInterval: TimeInterval
+    let pingIntervalNanos: UInt64
     let logger: Logger
     let eventLoopGroup: EventLoopGroup?
 }
