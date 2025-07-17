@@ -4,7 +4,7 @@ services:
     container_name: pulsar
     ports:
       - "6650:6650"
-      - "8080:8080"
+      - "8081:8080"  # ← Use 8081 instead of 8080
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
@@ -23,7 +23,7 @@ services:
     image: ghcr.io/shopify/toxiproxy:2.11.0
     container_name: toxiproxy
     ports:
-      - "8474:8474"
+      - "8475:8474"  # ← Use 8475 instead of 8474
       - "16650:16650"
     # No healthcheck possible - this is a distroless container
     depends_on:

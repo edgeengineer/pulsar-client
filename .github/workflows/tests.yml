@@ -72,6 +72,15 @@ jobs:
 
     - name: Start Pulsar and Toxiproxy
       run: docker compose -f docker/docker-compose.integration.yml up -d --wait
+
+    - name: Check container status and logs
+      run: |
+        echo "=== Container Status ==="
+        docker ps -a
+        echo "=== Pulsar Logs ==="
+        docker logs pulsar 2>&1 || echo "No pulsar logs available"
+        echo "=== Toxiproxy Logs ==="
+        docker logs toxiproxy 2>&1 || echo "No toxiproxy logs available"
     
     - name: Configure Toxiproxy
       run: |
@@ -88,8 +97,8 @@ jobs:
     - name: Run Integration Tests
       env:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
-        PULSAR_ADMIN_URL: http://localhost:8080
-        TOXIPROXY_URL: http://localhost:8474
+        PULSAR_ADMIN_URL: http://localhost:8081
+        TOXIPROXY_URL: http://localhost:8475
       timeout-minutes: 5
       run: swift test --filter PulsarClientIntegrationTests
     
