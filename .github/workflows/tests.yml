@@ -103,10 +103,7 @@ jobs:
       timeout-minutes: 15  # Reduced from 20 due to parallelism
       run: |
         # Run most tests in parallel
-        swift test --filter PulsarClientIntegrationTests --parallel --num-workers 4 --skip-filter FailureScenarioTests
-        
-        # Run failure scenario tests separately (they manipulate shared proxy)
-        swift test --filter FailureScenarioTests
+        swift test --filter PulsarClientIntegrationTests --parallel --num-workers 4
     
     - name: Cleanup
       if: always()
