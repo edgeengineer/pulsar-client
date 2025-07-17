@@ -10,14 +10,14 @@ services:
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
       - PULSAR_STANDALONE_RESET=true  # ← Force reset on startup
     command: bin/pulsar standalone
+    tmpfs:
+      - /pulsar/data:rw,noexec,nosuid,size=1g  # ← Replace volume with tmpfs
     healthcheck:
       test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 120s
-    volumes:
-      - /tmp/pulsar-data:/pulsar/data  # ← Use temp storage for CI
 
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.11.0
