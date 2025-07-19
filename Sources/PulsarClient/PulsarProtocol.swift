@@ -536,6 +536,23 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
         return command
     }
     
+    /// Create AUTH_RESPONSE command
+    public func authResponse(
+        clientVersion: String = "PulsarClient-Swift/1.0.0",
+        response: Pulsar_Proto_AuthData
+    ) -> Pulsar_Proto_BaseCommand {
+        var command = Pulsar_Proto_BaseCommand()
+        command.type = .authResponse
+        
+        var authResponse = Pulsar_Proto_CommandAuthResponse()
+        authResponse.clientVersion = clientVersion
+        authResponse.response = response
+        authResponse.protocolVersion = PulsarProtocol.protocolVersion
+        
+        command.authResponse = authResponse
+        return command
+    }
+    
     /// Create message metadata
     public func createMessageMetadata(
         producerName: String,

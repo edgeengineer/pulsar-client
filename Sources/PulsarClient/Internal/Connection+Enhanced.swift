@@ -120,6 +120,10 @@ extension Connection {
             logger.debug("Handling CLOSE_CONSUMER")
             handleCloseConsumer(command.closeConsumer)
             
+        case .authChallenge:
+            logger.info("Handling AUTH_CHALLENGE")
+            handleAuthChallenge(command.authChallenge)
+            
         case .error:
             logger.error("Handling ERROR: \(command.error)")
             handleError(command.error)
@@ -241,6 +245,39 @@ extension Connection {
                 $0.error = error
             })
             continuation.finish()
+        }
+    }
+    
+    private func handleAuthChallenge(_ challenge: Pulsar_Proto_CommandAuthChallenge) {
+        Task {
+            do {
+                guard let auth = authentication else {
+                    logger.error("Received auth challenge but no authentication configured")
+                    await self.close()
+                    return
+                }
+                
+                logger.info("Responding to authentication challenge")
+                
+                // Get response data from authentication provider
+                let responseData = try await auth.handleAuthenticationChallenge(challenge)
+                
+                // Create auth data
+                var authData = Pulsar_Proto_AuthData()
+                authData.authMethodName = auth.authenticationMethodName
+                authData.authData = responseData
+                
+                // Send auth response
+                let authResponse = commandBuilder.authResponse(response: authData)
+                let frame = PulsarFrame(command: authResponse)
+                
+                try await sendFrame(frame)
+                logger.info("Sent authentication response")
+                
+            } catch {
+                logger.error("Failed to handle auth challenge: \(error)")
+                await self.close()
+            }
         }
     }
 }
