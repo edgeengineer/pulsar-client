@@ -568,15 +568,27 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
     public func createMessageMetadata(
         from messageMetadata: MessageMetadata,
         producerName: String,
-        publishTime: Date = Date()
+        publishTime: Date = Date(),
+        sequenceId: UInt64? = nil,
+        compressionType: CompressionType = .none
     ) -> Pulsar_Proto_MessageMetadata {
         var proto = messageMetadata.toProto()
         proto.producerName = producerName
         proto.publishTime = UInt64(publishTime.timeIntervalSince1970 * 1000)
         
-        // Override sequence ID if not set
-        if !proto.hasSequenceID, let sequenceId = messageMetadata.sequenceId {
+        // Ensure sequence ID is always set (required field)
+        if let sequenceId = sequenceId {
             proto.sequenceID = sequenceId
+        } else if let metadataSequenceId = messageMetadata.sequenceId {
+            proto.sequenceID = metadataSequenceId
+        } else {
+            // This should never happen in production, but ensure we have a value
+            proto.sequenceID = 0
+        }
+        
+        // Always ensure compression is set
+        if !proto.hasCompression {
+            proto.compression = mapCompressionType(compressionType)
         }
         
         return proto

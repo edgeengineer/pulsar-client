@@ -1,7 +1,7 @@
 services:
   # Apache Pulsar Standalone (for development and basic testing)
   pulsar-standalone:
-    image: apachepulsar/pulsar:3.2.0
+    image: apachepulsar/pulsar:4.0.0
     container_name: pulsar-standalone
     ports:
       - "6650:6650"  # Pulsar broker

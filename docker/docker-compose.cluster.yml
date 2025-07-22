@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # Zookeeper
   zookeeper:
-    image: apachepulsar/pulsar:3.2.0
+    image: apachepulsar/pulsar:4.0.0
     container_name: zookeeper
     hostname: zookeeper
     ports:
@@ -23,7 +23,7 @@ services:
       - pulsar-cluster
     restart: unless-stopped
   pulsar-init:
-    image: apachepulsar/pulsar:3.2.0
+    image: apachepulsar/pulsar:4.0.0
     container_name: pulsar-init
     hostname: pulsar-init
     working_dir: /pulsar
@@ -43,7 +43,7 @@ services:
 
   # BookKeeper
   bookkeeper:
-    image: apachepulsar/pulsar:3.2.0
+    image: apachepulsar/pulsar:4.0.0
     container_name: bookkeeper
     hostname: bookkeeper
     ports:
@@ -77,7 +77,7 @@ services:
 
   # Pulsar Broker
   broker:
-    image: apachepulsar/pulsar:3.2.0
+    image: apachepulsar/pulsar:4.0.0
     container_name: broker
     hostname: broker
     ports:

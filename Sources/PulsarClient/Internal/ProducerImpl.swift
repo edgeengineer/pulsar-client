@@ -219,12 +219,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
                     // Encode message
                     let payload = try self.schema.encode(message)
                     
-                    // Create metadata
+                    // Create metadata with guaranteed sequence ID and compression type
                     let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
                         producerName: self.producerName,
                         sequenceId: metadata.sequenceId!,
                         publishTime: Date(),
-                        properties: metadata.properties
+                        properties: metadata.properties,
+                        compressionType: self.configuration.compressionType
                     )
                     
                     // Create send operation
@@ -355,6 +356,22 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     /// Process a single send operation (like C# channel.Send)
     private func processSendOperation(_ sendOp: SendOperation<T>, channel: ProducerChannel) async {
         do {
+            // Validate required fields before sending
+            guard sendOp.metadata.hasProducerName,
+                  sendOp.metadata.hasSequenceID,
+                  sendOp.metadata.hasPublishTime else {
+                let missingFields = [
+                    sendOp.metadata.hasProducerName ? nil : "producer_name",
+                    sendOp.metadata.hasSequenceID ? nil : "sequence_id",
+                    sendOp.metadata.hasPublishTime ? nil : "publish_time"
+                ].compactMap { $0 }.joined(separator: ", ")
+                
+                sendOp.fail(with: PulsarClientError.invalidConfiguration(
+                    "Missing required metadata fields: \(missingFields)"
+                ))
+                return
+            }
+            
             // Create send command
             let sendCommand = await connection.commandBuilder.send(
                 producerId: id,
