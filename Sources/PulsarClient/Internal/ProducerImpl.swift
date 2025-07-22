@@ -227,6 +227,8 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
                         properties: metadata.properties,
                         compressionType: self.configuration.compressionType
                     )
+
+                    logger.info("Sending message with producer name \(self.producerName), sequence ID \(metadata.sequenceId!), publish time \(Date())")
                     
                     // Create send operation
                     let sendOp = SendOperation<T>(
@@ -527,6 +529,21 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         let channelManager = await connection.getChannelManager()
         guard await channelManager.getProducer(id: id) != nil else {
             throw PulsarClientError.producerBusy("Producer channel not found")
+        }
+        
+        // Validate required fields before sending batch
+        guard metadata.hasProducerName,
+              metadata.hasSequenceID,
+              metadata.hasPublishTime else {
+            let missingFields = [
+                metadata.hasProducerName ? nil : "producer_name",
+                metadata.hasSequenceID ? nil : "sequence_id",
+                metadata.hasPublishTime ? nil : "publish_time"
+            ].compactMap { $0 }.joined(separator: ", ")
+            
+            throw PulsarClientError.invalidConfiguration(
+                "Missing required metadata fields in batch: \(missingFields)"
+            )
         }
         
         // For batch sends, we need to handle all messages differently

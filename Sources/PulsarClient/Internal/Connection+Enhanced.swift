@@ -526,7 +526,11 @@ extension Connection {
     
     /// Start automatic reconnection monitoring
     func startReconnectionMonitoring() {
-        Task {
+        // Cancel any existing monitoring task
+        healthMonitoringTask?.cancel()
+        
+        // Create and store new monitoring task
+        healthMonitoringTask = Task {
             await monitorConnectionHealth()
         }
     }
