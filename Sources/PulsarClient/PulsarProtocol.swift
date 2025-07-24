@@ -8,8 +8,8 @@ public enum PulsarProtocol {
     /// Magic number for Pulsar protocol
     static let magicNumber: UInt16 = 0x0e01
     
-    /// Current protocol version (matches C# DotPulsar)
-    static let protocolVersion: Int32 = 14
+    /// Current protocol version 
+    static let protocolVersion: Int32 = 14 
     
     /// Maximum frame size (5MB)
     static let maxFrameSize: Int = 5 * 1024 * 1024
@@ -117,16 +117,34 @@ public struct PulsarFrameEncoder {
         // Calculate CRC32C checksum
         let checksum = calculateCRC32C(data: metadataPayloadSection)
         
-        // Build complete frame: totalSize + commandSize + command + checksum + magicNumber + metadataSize + metadata + payload
+        // Build complete frame: totalSize + commandSize + command + magicNumber + checksum + metadataSize + metadata + payload
         var buffer = Data()
-        let totalSize = UInt32(4 + commandData.count + 4 + 2 + metadataPayloadSection.count)  // commandSize + command + checksum + magic + metadata+payload
+        // totalSize does not include the 4 bytes of totalSize itself
+        let totalSize = UInt32(4 + commandData.count + 2 + 4 + metadataPayloadSection.count)  // commandSize + command + magic + checksum + (metadataSize + metadata + payload)
         
+        // Debug logging
+        if ProcessInfo.processInfo.environment["PULSAR_DEBUG"] != nil {
+            print("DEBUG: Frame structure:")
+            print("  totalSize: \(totalSize) (0x\(String(format: "%08x", totalSize)))")
+            print("  commandSize: \(commandSize) (0x\(String(format: "%08x", commandSize)))")
+            print("  checksum: \(checksum) (0x\(String(format: "%08x", checksum)))")
+            print("  metadataSize: \(metadataSize) (0x\(String(format: "%08x", metadataSize)))")
+            print("  payloadSize: \(payload.count)")
+            print("  metadataPayloadSection size: \(metadataPayloadSection.count)")
+        }
+        
+        // Print first few bytes of the frame
+        let frameStart = buffer.count
         buffer.append(contentsOf: withUnsafeBytes(of: totalSize.bigEndian) { Array($0) })
         buffer.append(contentsOf: withUnsafeBytes(of: commandSize.bigEndian) { Array($0) })
         buffer.append(commandData)
-        buffer.append(contentsOf: withUnsafeBytes(of: checksum.bigEndian) { Array($0) })
         buffer.append(contentsOf: [0x0e, 0x01]) // Magic number
+        buffer.append(contentsOf: withUnsafeBytes(of: checksum.bigEndian) { Array($0) })
         buffer.append(metadataPayloadSection)
+        
+        if ProcessInfo.processInfo.environment["PULSAR_DEBUG"] != nil {
+            print("DEBUG: Frame bytes (first 20): \(buffer.prefix(20).map { String(format: "%02x", $0) }.joined(separator: " "))")
+        }
         
         return buffer
     }
@@ -168,15 +186,8 @@ public struct PulsarFrameDecoder {
         // Check if this is a simple frame (command only) or complex frame (with metadata/payload)
         let remainingSize = Int(totalSize) + 4 - offset
         
-        if remainingSize > 6 { // Need at least checksum(4) + magic(2)
-            // Complex frame: checksum + magic + metadata + payload
-            
-            // Read checksum (4 bytes)
-            guard offset + 4 <= data.count else { return nil }
-            let checksum = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { bytes in
-                UInt32(bigEndian: bytes.load(as: UInt32.self))
-            }
-            offset += 4
+        if remainingSize > 6 { // Need at least magic(2) + checksum(4)
+            // Complex frame: magic + checksum + metadata + payload
             
             // Read magic number (2 bytes)
             guard offset + 2 <= data.count else { return nil }
@@ -185,6 +196,13 @@ public struct PulsarFrameDecoder {
                 throw PulsarClientError.protocolError("Invalid magic number in frame")
             }
             offset += 2
+            
+            // Read checksum (4 bytes)
+            guard offset + 4 <= data.count else { return nil }
+            let checksum = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { bytes in
+                UInt32(bigEndian: bytes.load(as: UInt32.self))
+            }
+            offset += 4
             
             // Read metadata size and metadata
             guard offset + 4 <= data.count else { return nil }
@@ -205,8 +223,9 @@ public struct PulsarFrameDecoder {
                     payload = data.subdata(in: offset..<(offset + payloadSize))
                 }
                 
-                // Verify checksum
-                let metadataPayloadSection = data.subdata(in: (8 + Int(commandSize) + 6)..<(Int(totalSize) + 4))
+                // Verify checksum - checksum is calculated over metadataSize + metadata + payload
+                let checksumStartOffset = 8 + Int(commandSize) + 2 + 4  // After totalSize + commandSize + command + magic + checksum
+                let metadataPayloadSection = data.subdata(in: checksumStartOffset..<(Int(totalSize) + 4))
                 let calculatedChecksum = calculateCRC32C(data: metadataPayloadSection)
                 guard calculatedChecksum == checksum else {
                     throw PulsarClientError.protocolError("Frame checksum mismatch")
@@ -273,6 +292,16 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
         if let authData = authData {
             connect.authData = authData
         }
+        
+        // Set feature flags to match DotPulsar
+        var featureFlags = Pulsar_Proto_FeatureFlags()
+        featureFlags.supportsAuthRefresh = false
+        featureFlags.supportsBrokerEntryMetadata = false  // DotPulsar doesn't set this for v14
+        featureFlags.supportsPartialProducer = false
+        featureFlags.supportsTopicWatchers = false
+        featureFlags.supportsGetPartitionedMetadataWithoutAutoCreation = false
+        featureFlags.supportsReplDedupByLidAndEid = false
+        connect.featureFlags = featureFlags
         
         command.connect = connect
         return command
@@ -576,6 +605,7 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
         proto.producerName = producerName
         proto.publishTime = UInt64(publishTime.timeIntervalSince1970 * 1000)
         
+        
         // Ensure sequence ID is always set (required field)
         if let sequenceId = sequenceId {
             proto.sequenceID = sequenceId
@@ -587,9 +617,8 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
         }
         
         // Always ensure compression is set
-        if !proto.hasCompression {
-            proto.compression = mapCompressionType(compressionType)
-        }
+        // Force it to be serialized even if it's the default value
+        proto.compression = mapCompressionType(compressionType)
         
         return proto
     }
