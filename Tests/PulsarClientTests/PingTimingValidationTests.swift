@@ -6,7 +6,7 @@ import Foundation
 struct PingTimingValidationTests {
     
     @Test("Ping interval affects configuration correctly")
-    func testPingIntervalConfiguration() {
+    func testPingIntervalConfiguration() async {
         let fastBuilder = PulsarClientBuilder()
             .withServiceUrl("pulsar://localhost:6650")
             .withPingInterval(seconds: 0.5) // 500ms
@@ -25,10 +25,14 @@ struct PingTimingValidationTests {
         
         #expect(type(of: fastClient) == PulsarClient.self)
         #expect(type(of: slowClient) == PulsarClient.self)
+
+        // dispose unused clients after tests
+        await fastClient.dispose()
+        await slowClient.dispose()
     }
     
     @Test("Integration test ping interval matches documentation")
-    func testIntegrationTestPingInterval() {
+    func testIntegrationTestPingInterval() async {
         // Verify that integration tests use the fast ping interval we set
         let testBuilder = PulsarClientBuilder()
             .withServiceUrl("pulsar://localhost:6650")
@@ -38,6 +42,9 @@ struct PingTimingValidationTests {
         
         let client = testBuilder.build()
         #expect(type(of: client) == PulsarClient.self)
+
+        // dispose unused client after test
+        await client.dispose()
     }
     
     @Test("Production vs test ping intervals")

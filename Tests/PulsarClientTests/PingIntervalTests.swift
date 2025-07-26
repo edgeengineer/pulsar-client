@@ -6,7 +6,7 @@ import Foundation
 struct PingIntervalTests {
     
     @Test("PulsarClientBuilder with ping interval in seconds")
-    func testPulsarClientBuilderWithPingIntervalSeconds() {
+    func testPulsarClientBuilderWithPingIntervalSeconds() async throws {
         // Test with custom ping interval in seconds
         let builder = PulsarClientBuilder()
             .withServiceUrl("pulsar://localhost:6650")
@@ -20,10 +20,13 @@ struct PingIntervalTests {
         // We can't directly access the configuration without making it internal,
         // but we can verify the builder method worked by checking it doesn't throw
         #expect(builder.pingIntervalNanos == 5_000_000_000)
+
+        // dispose unused client after tests
+        await client.dispose()
     }
     
     @Test("PulsarClientBuilder with ping interval in nanoseconds")
-    func testPulsarClientBuilderWithPingIntervalNanos() {
+    func testPulsarClientBuilderWithPingIntervalNanos() async throws {
         // Test with custom ping interval in nanoseconds
         let builder = PulsarClientBuilder()
             .withServiceUrl("pulsar://localhost:6650")
@@ -36,10 +39,13 @@ struct PingIntervalTests {
         
         // Verify the interval was set correctly
         #expect(builder.pingIntervalNanos == 2_000_000_000)
+
+        // dispose unused client after tests
+        await client.dispose()
     }
     
     @Test("Default ping interval is 30 seconds")
-    func testDefaultPingInterval() {
+    func testDefaultPingInterval() async throws {
         let builder = PulsarClientBuilder()
             .withServiceUrl("pulsar://localhost:6650")
         
@@ -48,6 +54,9 @@ struct PingIntervalTests {
         
         let client = builder.build()
         #expect(type(of: client) == PulsarClient.self)
+
+        // dispose unused client after tests
+        await client.dispose()
     }
     
     @Test("Ping interval seconds conversion")
@@ -68,7 +77,7 @@ struct PingIntervalTests {
     }
     
     @Test("Builder method chaining with ping interval")
-    func testBuilderMethodChaining() {
+    func testBuilderMethodChaining() async throws {
         let client = PulsarClient.builder { builder in
             builder.withServiceUrl("pulsar://localhost:6650")
                    .withPingInterval(seconds: 3.0)
@@ -76,10 +85,13 @@ struct PingIntervalTests {
         }
         
         #expect(type(of: client) == PulsarClient.self)
+
+        // dispose unused client after tests
+        await client.dispose()
     }
     
     @Test("ClientConfiguration includes ping interval")
-    func testClientConfigurationIncludesPingInterval() {
+    func testClientConfigurationIncludesPingInterval() async throws {
         // Create a builder with custom ping interval
         let builder = PulsarClientBuilder()
             .withServiceUrl("pulsar://localhost:6650")
@@ -91,6 +103,9 @@ struct PingIntervalTests {
         // The fact that this builds successfully means the configuration
         // includes the ping interval and is passed through properly
         #expect(type(of: client) == PulsarClient.self)
+
+        // dispose unused client after tests
+        await client.dispose()
     }
 }
 
@@ -210,6 +225,9 @@ struct ConnectionHealthMonitoringTests {
             group.cancelAll()
         }
         
+        // Give a small amount of time for the async cancellation handlers to complete
+        try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        
         let (handler1Called, handler2Called) = await tracker.getBothHandlerStatus()
         #expect(handler1Called == true)
         #expect(handler2Called == true)
@@ -220,7 +238,7 @@ struct ConnectionHealthMonitoringTests {
 struct PingIntervalIntegrationTests {
     
     @Test("Fast ping interval for testing")
-    func testFastPingIntervalForTesting() {
+    func testFastPingIntervalForTesting() async throws {
         // Test that we can create a client with very fast ping interval
         // suitable for testing (like our IntegrationTestCase does)
         let client = PulsarClient.builder { builder in
@@ -229,6 +247,9 @@ struct PingIntervalIntegrationTests {
         }
         
         #expect(type(of: client) == PulsarClient.self)
+
+        // dispose unused client after tests
+        await client.dispose()
     }
     
     @Test("Ping interval boundary values")
@@ -267,6 +288,11 @@ struct PingIntervalIntegrationTests {
             }
             
             #expect(clients.count == 5)
+
+            // dispose unused clients after test
+            for client in clients {
+                await client.dispose()
+            }
         }
     }
 }

@@ -68,11 +68,6 @@ struct PingMonitoringTests {
     func testConnectionMonitoringWithDifferentPingIntervals() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Test with extremely fast ping interval
         let fastConnection = Connection(
@@ -120,17 +115,15 @@ struct PingMonitoringTests {
         
         await fastConnection.close()
         await slowConnection.close()
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Connection monitoring state machine behavior")
     func testConnectionMonitoringStateMachine() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         let connection = Connection(
             url: url,
@@ -164,6 +157,9 @@ struct PingMonitoringTests {
         
         // Should exit monitoring loop quickly when state becomes .closed
         #expect(endTime.timeIntervalSince(startTime) < 1.0)
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Ping interval configuration flows through to monitoring")
@@ -173,11 +169,6 @@ struct PingMonitoringTests {
         
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Test different ping intervals
         let intervals: [UInt64] = [
@@ -217,5 +208,8 @@ struct PingMonitoringTests {
             
             await connection.close()
         }
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
 }

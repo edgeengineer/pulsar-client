@@ -12,11 +12,6 @@ struct ConnectionEnhancedTests {
     func testConnectionPingIntervalConfiguration() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Test with custom ping interval
         let fastConnection = Connection(
@@ -36,17 +31,19 @@ struct ConnectionEnhancedTests {
         // Verify connections have different ping intervals
         #expect(await fastConnection.pingIntervalNanos == 1_000_000_000)
         #expect(await slowConnection.pingIntervalNanos == 30_000_000_000)
+        
+        // Clean up connections before shutting down event loop
+        await fastConnection.close()
+        await slowConnection.close()
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Connection monitoring task cancellation", .timeLimit(.minutes(1)))
     func testConnectionMonitoringCancellation() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Create connection with very short ping interval for testing
         let connection = Connection(
@@ -77,17 +74,18 @@ struct ConnectionEnhancedTests {
         
         // Should complete quickly after cancellation (well under 1 second)
         #expect(duration < 1.0)
+        
+        // Clean up connection before shutting down event loop
+        await connection.close()
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Connection state transitions during monitoring")
     func testConnectionStateTransitions() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         let connection = Connection(
             url: url,
@@ -104,17 +102,15 @@ struct ConnectionEnhancedTests {
         await connection.close()
         let closedState = await connection.state
         #expect(closedState == .closed)
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Multiple connections with different ping intervals")
     func testMultipleConnectionsWithDifferentPingIntervals() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Create connections with different ping intervals
         let connections = await withTaskGroup(of: Connection.self) { group in
@@ -167,6 +163,9 @@ struct ConnectionEnhancedTests {
                 }
             }
         }
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
 }
 
@@ -177,11 +176,6 @@ struct ConnectionHealthMonitoringInternalTests {
     func testConnectionMonitoringStateChanges() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         let connection = Connection(
             url: url,
@@ -207,17 +201,15 @@ struct ConnectionHealthMonitoringInternalTests {
         let endTime = Date()
         
         #expect(endTime.timeIntervalSince(startTime) < 0.5)
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Fast ping interval for testing scenarios", .timeLimit(.minutes(1)))
     func testFastPingIntervalForTesting() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Test with very fast ping interval (like our integration tests)
         let connection = Connection(
@@ -246,17 +238,18 @@ struct ConnectionHealthMonitoringInternalTests {
         
         // Should cancel very quickly
         #expect(cancelEnd.timeIntervalSince(cancelStart) < 0.1)
+        
+        // Clean up connection before shutting down event loop
+        await connection.close()
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
     
     @Test("Connection ping interval bounds checking")
     func testConnectionPingIntervalBounds() async throws {
         let url = try PulsarURL(string: "pulsar://localhost:6650")
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { 
-            Task.detached { 
-                try? await eventLoopGroup.shutdownGracefully() 
-            }
-        }
         
         // Test minimum reasonable ping interval (1ms)
         let minConnection = Connection(
@@ -287,5 +280,8 @@ struct ConnectionHealthMonitoringInternalTests {
         // Clean up
         await minConnection.close()
         await maxConnection.close()
+        
+        // Now safely shutdown the event loop
+        try await eventLoopGroup.shutdownGracefully()
     }
 }

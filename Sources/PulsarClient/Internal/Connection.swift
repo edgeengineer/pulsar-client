@@ -430,7 +430,7 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
         
         if readableBytes > 0 {
             var bufferCopy = buffer
-            if let bytes = bufferCopy.readBytes(length: min(readableBytes, 50)) {
+            if let bytes = bufferCopy.readBytes(length: min(readableBytes, 100)) {
                 let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
                 logger.info("Raw outgoing data (\(readableBytes) bytes): \(hexString)...")
             }
