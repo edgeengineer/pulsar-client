@@ -52,7 +52,6 @@ actor Connection: PulsarConnection {
     internal var commandBuilder = PulsarCommandBuilder()
     private let authentication: Authentication?
     private let encryptionPolicy: EncryptionPolicy
-    internal let pingIntervalNanos: UInt64
     
     private var _state: ConnectionState = .disconnected
     private let stateStream: AsyncStream<ConnectionState>
@@ -75,13 +74,12 @@ actor Connection: PulsarConnection {
     var state: ConnectionState { _state }
     var stateChanges: AsyncStream<ConnectionState> { stateStream }
     
-    init(url: PulsarURL, eventLoopGroup: EventLoopGroup, logger: Logger, authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted, pingIntervalNanos: UInt64 = 30_000_000_000) {
+    init(url: PulsarURL, eventLoopGroup: EventLoopGroup, logger: Logger, authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted) {
         self.url = url
         self.eventLoopGroup = eventLoopGroup
         self.logger = logger
         self.authentication = authentication
         self.encryptionPolicy = encryptionPolicy
-        self.pingIntervalNanos = pingIntervalNanos
         self.channelManager = ChannelManager(logger: logger)
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ConnectionState>.makeStream()
