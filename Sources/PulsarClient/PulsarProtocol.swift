@@ -344,7 +344,7 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
             producer.schema = protoSchema
         }
         
-        if initialSequenceId != nil {
+        if let initialSequenceId = initialSequenceId {
             // Note: initialSequenceID might be named differently in the proto
             // producer.initialSequenceID = initialSequenceId
         }
