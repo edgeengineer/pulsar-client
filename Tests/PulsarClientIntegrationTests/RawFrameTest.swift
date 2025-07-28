@@ -3,13 +3,30 @@ import Foundation
 @testable import PulsarClient
 
 @Suite("Raw Frame Test") 
-struct RawFrameTest {
+class RawFrameTest {
+    let testCase: IntegrationTestCase
+    
+    init() async throws {
+        self.testCase = try await IntegrationTestCase()
+    }
+    
+    // deinit returns before cleanup is complete, causing hanging tests
+    // so we use a semaphore to wait for the cleanup to complete
+    // replace with "isolated deinit" in Swift 6.2
+    deinit {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task { [testCase] in
+            await testCase.cleanup()
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+
     @Test("Check Raw Frame Flow", .timeLimit(.minutes(1)))
     func testRawFrameFlow() async throws {
-        // Create client
-        let client = PulsarClientBuilder()
-            .withServiceUrl("pulsar://localhost:6650")
-            .build()
+        guard let client = await testCase.client else {
+            throw IntegrationTestError.clientNotInitialized
+        }
         
         let topic = "persistent://public/default/test-raw-frame-\(UUID().uuidString)"
         

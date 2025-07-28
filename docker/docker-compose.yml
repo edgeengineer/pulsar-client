@@ -9,6 +9,12 @@ services:
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+      # Verbose logging configuration
+      - PULSAR_LOG_LEVEL=DEBUG
+      - PULSAR_LOG_ROOT_LEVEL=DEBUG
+      - PULSAR_ROOT_LOGGER=DEBUG,CONSOLE
+      # Additional JVM options for more verbose output
+      - PULSAR_EXTRA_OPTS=-Dpulsar.log.level=DEBUG -Dlog4j2.debug=true -Dorg.apache.pulsar.log.level=DEBUG
     command: bin/pulsar standalone
     healthcheck:
       test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]

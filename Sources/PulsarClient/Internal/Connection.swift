@@ -1,9 +1,10 @@
 import Foundation
+import Logging
 import NIOCore
 import NIOPosix
 import NIOSSL
 import NIO
-import Logging
+
 
 /// Connection state
 public enum ConnectionState: Equatable, Sendable {
@@ -60,6 +61,7 @@ actor Connection: PulsarConnection {
     private var frameHandler: PulsarFrameHandler?
     internal var channelManager: ChannelManager?
     private var backgroundProcessingTask: Task<Void, Never>?
+    internal var healthMonitoringTask: Task<Void, Never>?
     private var frameProcessingStarted = false
     
     // Statistics tracking
@@ -89,6 +91,9 @@ actor Connection: PulsarConnection {
     }
     
     deinit {
+        // Cancel any running tasks
+        backgroundProcessingTask?.cancel()
+        healthMonitoringTask?.cancel()
         stateContinuation.finish()
     }
     
@@ -120,7 +125,7 @@ actor Connection: PulsarConnection {
             frameHandler.setConnectedHandler { [weak self] frame in
                 guard let self = self else { return }
                 Task {
-                    await self.logger.debug("CONNECTED handler called - Server version: \(frame.command.connected.serverVersion)")
+                    self.logger.debug("CONNECTED handler called - Server version: \(frame.command.connected.serverVersion)")
                     await self.updateState(.connected)
                     await self.setConnectedAt(Date())
                 }
@@ -212,8 +217,12 @@ actor Connection: PulsarConnection {
     }
     
     func close() async {
-        guard _state != .closing && _state != .closed else { return }
+        guard _state != .closing && _state != .closed else {
+            logger.debug("Connection already closing or closed")
+            return
+        }
         
+        logger.info("Starting connection close process")
         updateState(.closing)
         
         // Cancel all pending requests
@@ -225,13 +234,26 @@ actor Connection: PulsarConnection {
         // Close channels registered to this connection
         await channelManager?.closeAll()
         
-        // Close the channel
-        try? await channel?.close()
+        // Finish the frame stream to stop frame processing
+        frameHandler?.frameStreamContinuation.finish()
+        
+        // Close the channel and wait for it to complete
+        if let channel = channel {
+            logger.debug("Closing NIO channel")
+            do {
+                try await channel.close()
+                logger.debug("NIO channel closed successfully")
+            } catch {
+                logger.warning("Error closing NIO channel: \(error)")
+            }
+        }
         channel = nil
 
         // Close any background tasks
         backgroundProcessingTask?.cancel()
         backgroundProcessingTask = nil
+        healthMonitoringTask?.cancel()
+        healthMonitoringTask = nil
         
         updateState(.closed)
         logger.info("Connection closed")
@@ -283,7 +305,7 @@ actor Connection: PulsarConnection {
             totalBytesSent += UInt64(data.count)
         }
         
-        try await channel.writeAndFlush(NIOAny(frame))
+        try await channel.writeAndFlush(frame)
         
         // Update statistics
         totalMessagesSent += 1
@@ -295,7 +317,7 @@ actor Connection: PulsarConnection {
         logger.info("Creating background processing task")
         backgroundProcessingTask = Task.detached { [weak self] in
             guard let self = self else { return }
-            await self.logger.info("Background processing task started")
+            self.logger.info("Background processing task started")
             await self.markFrameProcessingStarted()
             await self.processIncomingFramesContinuously()
         }
@@ -360,7 +382,7 @@ actor Connection: PulsarConnection {
             }
             
             // Process all other frames through the enhanced handler
-            await handleIncomingFrame(frame)
+            handleIncomingFrame(frame)
             
             // Exit if connection is no longer active
             if _state == .closed || _state == .closing {
@@ -376,7 +398,7 @@ actor Connection: PulsarConnection {
 
 // MARK: - Raw Data Logger
 
-final class RawDataLogger: ChannelDuplexHandler {
+final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = ByteBuffer
     typealias OutboundIn = ByteBuffer
@@ -406,7 +428,7 @@ final class RawDataLogger: ChannelDuplexHandler {
         
         if readableBytes > 0 {
             var bufferCopy = buffer
-            if let bytes = bufferCopy.readBytes(length: min(readableBytes, 50)) {
+            if let bytes = bufferCopy.readBytes(length: min(readableBytes, 100)) {
                 let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
                 logger.info("Raw outgoing data (\(readableBytes) bytes): \(hexString)...")
             }
@@ -419,7 +441,7 @@ final class RawDataLogger: ChannelDuplexHandler {
 
 // MARK: - Frame Codec
 
-final class PulsarFrameByteDecoder: ByteToMessageDecoder {
+final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
     typealias InboundOut = PulsarFrame
     
     private let frameDecoder = PulsarFrameDecoder()
@@ -463,7 +485,7 @@ final class PulsarFrameByteDecoder: ByteToMessageDecoder {
     }
 }
 
-final class PulsarFrameByteEncoder: MessageToByteEncoder {
+final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
     typealias OutboundIn = PulsarFrame
     
     private let frameEncoder = PulsarFrameEncoder()
@@ -480,7 +502,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = PulsarFrame
     
     private weak var connection: Connection?
-    private let frameStreamContinuation: AsyncStream<PulsarFrame>.Continuation
+    internal let frameStreamContinuation: AsyncStream<PulsarFrame>.Continuation
     let incomingFrames: AsyncStream<PulsarFrame>
     private var connectedHandler: ((PulsarFrame) -> Void)?
     
@@ -503,7 +525,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         if frame.command.type == .connected {
             if let connection = connection {
                 Task {
-                    await connection.logger.debug("CONNECTED frame received - serverVersion=\(frame.command.connected.serverVersion), protocolVersion=\(frame.command.connected.protocolVersion)")
+                    connection.logger.debug("CONNECTED frame received", metadata: ["serverVersion": "\(frame.command.connected.serverVersion)", "protocolVersion": "\(frame.command.connected.protocolVersion)"])
                 }
             }
             
@@ -524,7 +546,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         if let connection = connection {
             Task {
-                await connection.logger.error("PulsarFrameHandler error: \(error)")
+                connection.logger.error("PulsarFrameHandler error: \(error)")
             }
         }
         frameStreamContinuation.finish()
@@ -534,7 +556,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelInactive(context: ChannelHandlerContext) {
         if let connection = connection {
             Task {
-                await connection.logger.warning("PulsarFrameHandler channel became inactive")
+                connection.logger.warning("PulsarFrameHandler channel became inactive")
             }
         }
         frameStreamContinuation.finish()
@@ -543,7 +565,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelActive(context: ChannelHandlerContext) {
         if let connection = connection {
             Task {
-                await connection.logger.info("PulsarFrameHandler channel is active")
+                connection.logger.info("PulsarFrameHandler channel is active")
             }
         }
     }
