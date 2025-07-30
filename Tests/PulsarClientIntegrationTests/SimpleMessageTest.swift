@@ -3,11 +3,30 @@ import Foundation
 @testable import PulsarClient
 
 @Suite("Simple Message Test")
-struct SimpleMessageTest {
+class SimpleMessageTest {
+    let testCase: IntegrationTestCase
+    
+    init() async throws {
+        self.testCase = try await IntegrationTestCase()
+    }
+    
+    // deinit returns before cleanup is complete, causing hanging tests
+    // so we use a semaphore to wait for the cleanup to complete
+    // replace with "isolated deinit" in Swift 6.2
+    deinit {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task { [testCase] in
+            await testCase.cleanup()
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
     
     @Test("Simple Send and Receive")
     func testSimpleSendReceive() async throws {
-        let client = PulsarClient.builder { _ in }
+        guard let client = await testCase.client else {
+            throw IntegrationTestError.clientNotInitialized
+        }
         
         let topic = "persistent://public/default/simple-test-\(UUID().uuidString)"
         

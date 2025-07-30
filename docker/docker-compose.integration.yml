@@ -1,14 +1,17 @@
-version: '3.8'
-
 services:
   pulsar:
     image: apachepulsar/pulsar:3.2.0
     container_name: pulsar
-    network_mode: host
+    ports:
+      - "6650:6650"
+      - "8081:8080"  # ← Use 8081 instead of 8080
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+      - PULSAR_STANDALONE_RESET=true  # ← Force reset on startup
     command: bin/pulsar standalone
+    tmpfs:
+      - /pulsar/data:rw,noexec,nosuid,size=1g  # ← Replace volume with tmpfs
     healthcheck:
       test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
       interval: 10s
@@ -19,9 +22,10 @@ services:
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.11.0
     container_name: toxiproxy
-    network_mode: host
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8474"]
-      interval: 5s
-      timeout: 2s
-      retries: 10
+    ports:
+      - "8475:8474"  # ← Use 8475 instead of 8474
+      - "16650:16650"
+    # No healthcheck possible - this is a distroless container
+    depends_on:
+      pulsar:
+        condition: service_healthy

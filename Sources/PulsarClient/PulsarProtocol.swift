@@ -1,7 +1,6 @@
 import Foundation
 import SwiftProtobuf
 import NIOCore
-import CyclicRedundancyCheck
 
 /// Pulsar wire protocol constants
 public enum PulsarProtocol {
@@ -124,8 +123,8 @@ public struct PulsarFrameEncoder {
         buffer.append(contentsOf: withUnsafeBytes(of: totalSize.bigEndian) { Array($0) })
         buffer.append(contentsOf: withUnsafeBytes(of: commandSize.bigEndian) { Array($0) })
         buffer.append(commandData)
-        buffer.append(contentsOf: withUnsafeBytes(of: checksum.bigEndian) { Array($0) })
         buffer.append(contentsOf: [0x0e, 0x01]) // Magic number
+        buffer.append(contentsOf: withUnsafeBytes(of: checksum.bigEndian) { Array($0) })
         buffer.append(metadataPayloadSection)
         
         return buffer
@@ -133,7 +132,7 @@ public struct PulsarFrameEncoder {
     
     /// Calculate CRC32C checksum (using Castagnoli polynomial)
     private func calculateCRC32C(data: Data) -> UInt32 {
-        return CyclicRedundancyCheck.crc32c(bytes: data)
+        return CRC32C.checksum(data)
     }
 }
 
@@ -159,7 +158,7 @@ public struct PulsarFrameDecoder {
         
         // Read command
         let commandData = data.subdata(in: 8..<(8 + Int(commandSize)))
-        let command = try Pulsar_Proto_BaseCommand(serializedBytes: [UInt8](commandData))
+        let command = try Pulsar_Proto_BaseCommand(serializedBytes: commandData)
         
         var offset = 8 + Int(commandSize)
         var metadata: Pulsar_Proto_MessageMetadata?
@@ -171,20 +170,20 @@ public struct PulsarFrameDecoder {
         if remainingSize > 6 { // Need at least checksum(4) + magic(2)
             // Complex frame: checksum + magic + metadata + payload
             
-            // Read checksum (4 bytes)
-            guard offset + 4 <= data.count else { return nil }
-            let checksum = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { bytes in
-                UInt32(bigEndian: bytes.load(as: UInt32.self))
-            }
-            offset += 4
-            
-            // Read magic number (2 bytes)
+             // Read magic number (2 bytes)
             guard offset + 2 <= data.count else { return nil }
             let magic = data.subdata(in: offset..<(offset + 2))
             guard magic == Data([0x0e, 0x01]) else {
                 throw PulsarClientError.protocolError("Invalid magic number in frame")
             }
             offset += 2
+
+            // Read checksum (4 bytes)
+            guard offset + 4 <= data.count else { return nil }
+            let checksum = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { bytes in
+                UInt32(bigEndian: bytes.load(as: UInt32.self))
+            }
+            offset += 4
             
             // Read metadata size and metadata
             guard offset + 4 <= data.count else { return nil }
@@ -196,7 +195,7 @@ public struct PulsarFrameDecoder {
             if metadataSize > 0 && offset + Int(metadataSize) <= data.count {
                 // Read metadata
                 let metadataData = data.subdata(in: offset..<(offset + Int(metadataSize)))
-                metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: [UInt8](metadataData))
+                metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: metadataData)
                 offset += Int(metadataSize)
                 
                 // Read payload if present
@@ -219,7 +218,7 @@ public struct PulsarFrameDecoder {
     
     /// Calculate CRC32C checksum (using Castagnoli polynomial)
     private func calculateCRC32C(data: Data) -> UInt32 {
-        return CyclicRedundancyCheck.crc32c(bytes: data)
+        return CRC32C.checksum(data)
     }
 }
 

@@ -1,15 +1,6 @@
 {
-  "originHash" : "8a5cdee4eda45ef2d0b90d8218b939c1ac3cc708e095608b9e1c6b4eaed91cbd",
+  "originHash" : "ba31bd16f63e4a354e1e83540918dbd5343fd4f0ed4057c7f06de34c61a1918b",
   "pins" : [
-    {
-      "identity" : "cyclic-redundancy-check",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/edgeengineer/cyclic-redundancy-check.git",
-      "state" : {
-        "revision" : "2a554dcc6396ea870e3911858b05757b63b0fb35",
-        "version" : "0.0.3"
-      }
-    },
     {
       "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",

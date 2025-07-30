@@ -341,7 +341,13 @@ extension MessageMetadata {
                 proto.compression = .snappy
             }
             proto.uncompressedSize = compressionInfo.uncompressedSize
+        } else {
+            // Always set compression to avoid issues (default to none if not specified)
+            proto.compression = .none
         }
+        
+        // Note: producer_name, sequence_id, and publish_time are required fields
+        // but they should be set by the caller since MessageMetadata doesn't have these values
         
         return proto
     }
