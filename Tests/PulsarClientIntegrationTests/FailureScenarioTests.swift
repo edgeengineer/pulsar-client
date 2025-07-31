@@ -31,6 +31,11 @@ class FailureScenarioTests {
     func testConnectionFailure() async throws {
         // This test requires Toxiproxy to be running
         let toxiproxyClient = ToxiproxyClient(baseURL: "http://localhost:8474")
+        
+        // Check if Toxiproxy is available
+        let isToxiproxyAvailable = await toxiproxyClient.isAvailable()
+        try #require(isToxiproxyAvailable, "Toxiproxy is not running")
+        
         let proxy = try await toxiproxyClient.getProxy(name: "pulsar")
         
         let topic = try await testCase.createTopic()
@@ -72,6 +77,21 @@ class FailureScenarioTests {
 // Simplified Toxiproxy client for testing
 struct ToxiproxyClient {
     let baseURL: String
+    
+    func isAvailable() async -> Bool {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 2
+        let urlSession = URLSession(configuration: config)
+        defer { urlSession.finishTasksAndInvalidate() }
+        
+        do {
+            let request = URLRequest(url: URL(string: "\(baseURL)/proxies")!)
+            _ = try await urlSession.data(for: request)
+            return true
+        } catch {
+            return false
+        }
+    }
     
     func getProxy(name: String) async throws -> ToxiproxyProxy {
         return ToxiproxyProxy(client: self, name: name)
