@@ -51,6 +51,6 @@ class RawFrameTest {
         
         // Cleanup
         await producer.dispose()
-        await client.dispose()
+        // Don't dispose client here - it's handled by IntegrationTestCase
     }
 }

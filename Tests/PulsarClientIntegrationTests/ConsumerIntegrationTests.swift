@@ -29,10 +29,12 @@ class ConsumerIntegrationTests {
             throw IntegrationTestError.clientNotInitialized
         }
         
+        let testId = UUID().uuidString.prefix(8)
+        
         // Test Exclusive subscription
         let exclusiveConsumer = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
             _ = builder
-                .subscriptionName("exclusive-sub")
+                .subscriptionName("exclusive-sub-\(testId)")
                 .subscriptionType(.exclusive)
         }
         
@@ -40,7 +42,7 @@ class ConsumerIntegrationTests {
         await #expect(throws: Error.self) {
             try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
                 _ = builder
-                    .subscriptionName("exclusive-sub")
+                    .subscriptionName("exclusive-sub-\(testId)")
                     .subscriptionType(.exclusive)
             }
         }
@@ -50,13 +52,13 @@ class ConsumerIntegrationTests {
         // Test Shared subscription
         let sharedConsumer1 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
             _ = builder
-                .subscriptionName("shared-sub")
+                .subscriptionName("shared-sub-\(testId)")
                 .subscriptionType(.shared)
         }
         
         let sharedConsumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
             _ = builder
-                .subscriptionName("shared-sub")
+                .subscriptionName("shared-sub-\(testId)")
                 .subscriptionType(.shared)
         }
 
@@ -75,11 +77,12 @@ class ConsumerIntegrationTests {
             throw IntegrationTestError.clientNotInitialized
         }
         
+        let testId = UUID().uuidString.prefix(8)
         let producer = try await client.newStringProducer(topic: topic)
         
         let consumer = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
             _ = builder
-                .subscriptionName("ack-sub")
+                .subscriptionName("ack-sub-\(testId)")
                 .initialPosition(.earliest)
         }
         
@@ -97,7 +100,7 @@ class ConsumerIntegrationTests {
         
         let consumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
             _ = builder
-                .subscriptionName("ack-sub")
+                .subscriptionName("ack-sub-\(testId)")
         }
         
         // Should receive unacknowledged message again

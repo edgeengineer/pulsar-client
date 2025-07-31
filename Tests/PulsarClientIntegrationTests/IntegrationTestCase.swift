@@ -124,6 +124,10 @@ actor IntegrationTestCase {
     
     func cleanup() async {
         print("[CI-Cleanup] Starting cleanup process.")
+        
+        // Wait a bit to ensure all test operations complete
+        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        
         // Close client
         if let client = _client {
             print("[CI-Cleanup] Disposing PulsarClient.")

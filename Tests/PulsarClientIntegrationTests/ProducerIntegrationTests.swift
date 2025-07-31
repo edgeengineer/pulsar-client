@@ -33,7 +33,8 @@ class ProducerIntegrationTests {
         let producer = try await client.newStringProducer(topic: topic)
         
         // Create consumer
-        let consumer = try await client.newStringConsumer(topic: topic, subscription: "test-sub")
+        let testId = UUID().uuidString.prefix(8)
+        let consumer = try await client.newStringConsumer(topic: topic, subscription: "test-sub-\(testId)")
         
         // Send message
         let messageContent = "Hello, Pulsar!"
@@ -68,7 +69,8 @@ class ProducerIntegrationTests {
                 .batchingMaxDelay(0.1)
         }
         
-        let consumer = try await client.newStringConsumer(topic: topic, subscription: "batch-sub")
+        let testId = UUID().uuidString.prefix(8)
+        let consumer = try await client.newStringConsumer(topic: topic, subscription: "batch-sub-\(testId)")
         
         // Send batch of messages
         let messages = (0..<10).map { "Message \($0)" }
