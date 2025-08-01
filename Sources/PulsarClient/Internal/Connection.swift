@@ -196,6 +196,9 @@ actor Connection: PulsarConnection {
                 }
                 logger.info("CONNECTED response received successfully")
                 logger.info("Successfully connected to Pulsar at \(url.host):\(url.port)")
+                
+                // Start reconnection monitoring after successful connection
+                startReconnectionMonitoring()
             } catch {
                 logger.error("Connection failed: \(error)")
                 throw error
@@ -257,6 +260,21 @@ actor Connection: PulsarConnection {
         
         updateState(.closed)
         logger.info("Connection closed")
+    }
+    
+    /// Handle channel becoming inactive (connection dropped)
+    func handleChannelInactive() async {
+        let currentState = _state
+        
+        // Only handle if we were connected
+        guard currentState == .connected || currentState == .reconnecting else {
+            return
+        }
+        
+        logger.warning("Connection lost, transitioning to disconnected state")
+        updateState(.disconnected)
+        
+        // The health monitoring task will handle reconnection attempts
     }
     
     // MARK: - Internal Methods
@@ -557,6 +575,8 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         if let connection = connection {
             Task {
                 connection.logger.warning("PulsarFrameHandler channel became inactive")
+                // Trigger connection state update to handle disconnection
+                await connection.handleChannelInactive()
             }
         }
         frameStreamContinuation.finish()

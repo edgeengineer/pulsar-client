@@ -324,7 +324,12 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         let frame = PulsarFrame(command: command)
         
         // Close consumer expects a success response
-        let _ = try? await connection.sendRequest(frame, responseType: SuccessResponse.self)
+        do {
+            let _ = try await connection.sendRequest(frame, responseType: SuccessResponse.self)
+        } catch {
+            logger.error("Failed to close consumer: \(error)")
+            // Ignore error, consumer will be closed anyway
+        }
         
         // Remove from channel manager
         await channelManager.removeConsumer(id: id)

@@ -202,8 +202,26 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
     
     public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
-        guard _state == .connected else {
-            throw PulsarClientError.producerBusy("Producer not connected")
+        return try await sendWithRetry(message, metadata: metadata, retryCount: 0)
+    }
+    
+    private func sendWithRetry(_ message: T, metadata: MessageMetadata, retryCount: Int) async throws -> MessageId {
+        let maxRetries = 3
+        
+        // Check if we need to attempt reconnection
+        if _state != .connected {
+            if retryCount < maxRetries {
+                logger.info("Producer not connected, attempting recovery (attempt \(retryCount + 1)/\(maxRetries))")
+                await attemptRecovery()
+                
+                // Wait a bit before retry
+                try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                
+                if _state == .connected {
+                    return try await sendWithRetry(message, metadata: metadata, retryCount: retryCount + 1)
+                }
+            }
+            throw PulsarClientError.producerBusy("Producer not connected after \(maxRetries) retry attempts")
         }
         
         // Assign sequence ID if not set
@@ -213,37 +231,64 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
         
         // Create the send operation with a continuation (like C# TaskCompletionSource)
-        return try await withCheckedThrowingContinuation { continuation in
-            Task {
-                do {
-                    // Encode message
-                    let payload = try self.schema.encode(message)
-                    
-                    // Create metadata with guaranteed sequence ID and compression type
-                    let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
-                        producerName: self.producerName,
-                        sequenceId: metadata.sequenceId!,
-                        publishTime: Date(),
-                        properties: metadata.properties,
-                        compressionType: self.configuration.compressionType
-                    )
+        do {
+            return try await withCheckedThrowingContinuation { continuation in
+                Task {
+                    do {
+                        // Encode message
+                        let payload = try self.schema.encode(message)
+                        
+                        // Create metadata with guaranteed sequence ID and compression type
+                        let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
+                            producerName: self.producerName,
+                            sequenceId: metadata.sequenceId!,
+                            publishTime: Date(),
+                            properties: metadata.properties,
+                            compressionType: self.configuration.compressionType
+                        )
 
-                    logger.info("Sending message with producer name \(self.producerName), sequence ID \(metadata.sequenceId!), publish time \(Date())")
-                    
-                    // Create send operation
-                    let sendOp = SendOperation<T>(
-                        metadata: protoMetadata,
-                        payload: payload,
-                        continuation: continuation
-                    )
-                    
-                    // Enqueue the operation
-                    try await self.sendQueue.enqueue(sendOp)
-                } catch {
-                    continuation.resume(throwing: error)
+                        logger.info("Sending message with producer name \(self.producerName), sequence ID \(metadata.sequenceId!), publish time \(Date())")
+                        
+                        // Create send operation
+                        let sendOp = SendOperation<T>(
+                            metadata: protoMetadata,
+                            payload: payload,
+                            continuation: continuation
+                        )
+                        
+                        // Enqueue the operation
+                        try await self.sendQueue.enqueue(sendOp)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } catch {
+            // Check if this is a connection-related error and we can retry
+            if retryCount < maxRetries && isConnectionError(error) {
+                logger.warning("Send failed with connection error, retrying: \(error)")
+                return try await sendWithRetry(message, metadata: metadata, retryCount: retryCount + 1)
+            }
+            throw error
         }
+    }
+    
+    private func isConnectionError(_ error: Error) -> Bool {
+        if let pulsarError = error as? PulsarClientError {
+            switch pulsarError {
+            case .connectionFailed, .protocolError, .timeout:
+                return true
+            default:
+                return false
+            }
+        }
+        // Check for common networking errors
+        let errorString = error.localizedDescription.lowercased()
+        return errorString.contains("connection") || 
+               errorString.contains("channel") || 
+               errorString.contains("closed") ||
+               errorString.contains("network") ||
+               errorString.contains("i/o")
     }
     
     public func sendBatch(_ messages: [T]) async throws -> [MessageId] {

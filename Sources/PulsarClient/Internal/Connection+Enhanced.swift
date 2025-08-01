@@ -154,6 +154,8 @@ extension Connection {
             return command.getLastMessageID.requestID
         case .getSchema:
             return command.getSchema.requestID
+        case .closeConsumer:
+            return command.closeConsumer.requestID
         default:
             return nil
         }
@@ -553,11 +555,11 @@ extension Connection {
                 
             case .reconnecting:
                 // Wait for reconnection to complete
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
                 
             default:
                 // Wait before next check
-                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
             }
         }
     }
@@ -620,7 +622,7 @@ extension Connection {
             updateState(.faulted(error))
             
             // Wait before next attempt
-            try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
         }
     }
     
