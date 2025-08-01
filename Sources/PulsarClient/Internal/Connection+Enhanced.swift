@@ -154,6 +154,8 @@ extension Connection {
             return command.getLastMessageID.requestID
         case .getSchema:
             return command.getSchema.requestID
+        case .closeConsumer:
+            return command.closeConsumer.requestID
         default:
             return nil
         }
