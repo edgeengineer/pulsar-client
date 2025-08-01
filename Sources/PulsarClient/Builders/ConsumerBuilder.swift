@@ -159,6 +159,24 @@ public final class ConsumerBuilder<T> where T: Sendable {
         return self
     }
     
+    @discardableResult
+    public func deadLetterPolicy(_ policy: DeadLetterPolicy?) -> Self {
+        options = options.withDeadLetterPolicy(policy)
+        return self
+    }
+    
+    @discardableResult
+    public func intercept(_ interceptors: any ConsumerInterceptor<T>...) -> Self {
+        options = options.withInterceptors(options.interceptors + interceptors)
+        return self
+    }
+    
+    @discardableResult
+    public func intercept(_ interceptors: [any ConsumerInterceptor<T>]) -> Self {
+        options = options.withInterceptors(options.interceptors + interceptors)
+        return self
+    }
+    
     // Dynamic member lookup for accessing options properties
     public subscript<Value>(dynamicMember keyPath: KeyPath<ConsumerOptions<T>, Value>) -> Value {
         return options[keyPath: keyPath]

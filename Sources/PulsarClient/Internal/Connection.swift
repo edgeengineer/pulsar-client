@@ -216,6 +216,10 @@ actor Connection: PulsarConnection {
         try await sendFrame(frame)
     }
     
+    func isConnected() async -> Bool {
+        return _state == .connected
+    }
+    
     func close() async {
         guard _state != .closing && _state != .closed else {
             logger.debug("Connection already closing or closed")

@@ -22,6 +22,13 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     private var isFirstFlow = true
     private var lastReceivedMessageId: MessageId?
     
+    // Dead Letter Queue handler
+    private let dlqHandler: DeadLetterQueueHandler<T>?
+    private weak var client: PulsarClient?
+    
+    // Interceptors
+    private let interceptors: ConsumerInterceptors<T>?
+    
     public let topics: [String]
     public let subscription: String
     public nonisolated var state: ClientState { 
@@ -38,7 +45,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         configuration: ConsumerOptions<T>,
         logger: Logger,
         channelManager: ChannelManager,
-        tracker: ClientTracker? = nil
+        tracker: ClientTracker? = nil,
+        client: PulsarClient? = nil
     ) {
         self.id = id
         self.topics = topics
@@ -49,10 +57,33 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         self.logger = logger
         self.channelManager = channelManager
         self.tracker = tracker
+        self.client = client
         self.permits = 0  // Start with 0 permits, will request them in runReceiver
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
         self.messageQueue = AsyncChannel(capacity: configuration.receiverQueueSize)
+        
+        // Initialize DLQ handler if policy is configured
+        if let dlqPolicy = configuration.deadLetterPolicy,
+           let client = client,
+           let firstTopic = topics.first {
+            self.dlqHandler = DeadLetterQueueHandler(
+                policy: dlqPolicy,
+                originalTopic: firstTopic,
+                subscriptionName: subscription,
+                client: client,
+                schema: schema
+            )
+        } else {
+            self.dlqHandler = nil
+        }
+        
+        // Initialize interceptors if configured
+        if !configuration.interceptors.isEmpty {
+            self.interceptors = ConsumerInterceptors(interceptors: configuration.interceptors)
+        } else {
+            self.interceptors = nil
+        }
         
         // Task will be started after initialization
     }
@@ -162,8 +193,13 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         }
         
         // Get message from queue
-        guard let message = await messageQueue.receive() else {
+        guard var message = await messageQueue.receive() else {
             throw PulsarClientError.consumerBusy("Consumer closed")
+        }
+        
+        // Process through interceptors if configured
+        if let interceptors = interceptors {
+            message = try await interceptors.beforeConsume(consumer: self, message: message)
         }
         
         // Flow control: request more messages if needed (more aggressive like C# client)
@@ -197,8 +233,26 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         let ackCommand = await connection.commandBuilder.ack(consumerId: id, messageId: message.id)
         let frame = PulsarFrame(command: ackCommand)
         
-        try await connection.sendCommand(frame)
-        logger.trace("Acknowledged message \(message.id)")
+        do {
+            try await connection.sendCommand(frame)
+            logger.trace("Acknowledged message \(message.id)")
+            
+            // Reset DLQ redelivery count on successful acknowledgment
+            if let dlqHandler = dlqHandler {
+                await dlqHandler.resetRedeliveryCount(for: message.id)
+            }
+            
+            // Notify interceptors of successful acknowledgment
+            if let interceptors = interceptors {
+                await interceptors.onAcknowledge(consumer: self, messageId: message.id, error: nil)
+            }
+        } catch {
+            // Notify interceptors of failed acknowledgment
+            if let interceptors = interceptors {
+                await interceptors.onAcknowledge(consumer: self, messageId: message.id, error: error)
+            }
+            throw error
+        }
     }
     
     public func acknowledgeCumulative(_ message: Message<T>) async throws {
@@ -239,6 +293,34 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             throw PulsarClientError.consumerBusy("Consumer not connected")
         }
         
+        // Check if message should go to DLQ
+        if let dlqHandler = dlqHandler,
+           await dlqHandler.shouldSendToDLQ(messageId: message.id) {
+            logger.info("Message exceeded max redelivery count, sending to DLQ", metadata: [
+                "messageId": "\(message.id)"
+            ])
+            
+            do {
+                // Send to retry topic or DLQ
+                try await dlqHandler.sendToRetryTopic(message)
+                
+                // Acknowledge the original message after successful DLQ send
+                try await acknowledge(message)
+                
+                // Clean up DLQ tracking periodically
+                await dlqHandler.cleanupOldEntries()
+                
+                return
+            } catch {
+                logger.error("Failed to send message to DLQ", metadata: [
+                    "messageId": "\(message.id)",
+                    "error": "\(error)"
+                ])
+                // Fall through to normal negative acknowledgment
+            }
+        }
+        
+        // Normal negative acknowledgment for redelivery
         var command = Pulsar_Proto_BaseCommand()
         command.type = .redeliverUnacknowledgedMessages
         
@@ -253,6 +335,11 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         let frame = PulsarFrame(command: command)
         try await connection.sendCommand(frame)
         logger.trace("Negatively acknowledged message \(message.id)")
+        
+        // Notify interceptors of negative acknowledgment
+        if let interceptors = interceptors {
+            await interceptors.onNegativeAcksSend(consumer: self, messageIds: Set([message.id]))
+        }
     }
     
     public func seek(to messageId: MessageId) async throws {

@@ -38,6 +38,22 @@ public protocol PulsarClientProtocol: Sendable {
         configure: (ReaderBuilder<T>) -> Void
     ) async throws -> any ReaderProtocol<T> where T: Sendable
     
+    /// Create a new transaction
+    /// - Returns: A transaction builder for configuring the transaction
+    func newTransaction() -> TransactionBuilder
+    
+    /// Create a new multi-topic producer
+    /// - Parameters:
+    ///   - topics: The topics to produce messages to
+    ///   - schema: The schema for message serialization
+    ///   - configure: Configuration closure for the producer
+    /// - Returns: A configured multi-topic producer instance
+    func newMultiTopicProducer<T>(
+        topics: [String],
+        schema: Schema<T>,
+        configure: (MultiTopicProducerBuilder<T>) -> Void
+    ) async throws -> MultiTopicProducer<T> where T: Sendable
+    
     /// Dispose of the client and all its resources
     func dispose() async
 }

@@ -60,6 +60,9 @@ public protocol MessageBuilderProtocol<T>: Sendable where T: Sendable {
     /// Set the disable replication flag
     func withDisableReplication(_ disable: Bool) -> Self
     
+    /// Set the transaction for this message
+    func withTransaction(_ transaction: Transaction) -> Self
+    
     /// Send the message
     func send() async throws -> MessageId
 }
@@ -69,6 +72,7 @@ public struct MessageBuilder<T>: MessageBuilderProtocol where T: Sendable {
     public let producer: any ProducerProtocol<T>
     private var metadata: MessageMetadata
     private var value: T?
+    private var transaction: Transaction?
     
     public init(producer: any ProducerProtocol<T>) {
         self.producer = producer
@@ -153,6 +157,12 @@ public struct MessageBuilder<T>: MessageBuilderProtocol where T: Sendable {
         return builder
     }
     
+    public func withTransaction(_ transaction: Transaction) -> MessageBuilder<T> {
+        var builder = self
+        builder.transaction = transaction
+        return builder
+    }
+    
     public func send() async throws -> MessageId {
         guard let value = value else {
             throw PulsarClientError.invalidConfiguration("Message value not set")
@@ -167,5 +177,10 @@ public extension ProducerProtocol {
     /// Create a new message builder
     func newMessage() -> MessageBuilder<MessageType> {
         return MessageBuilder(producer: self)
+    }
+    
+    /// Create a new message builder with a transaction
+    func newMessage(transaction: Transaction) -> MessageBuilder<MessageType> {
+        return MessageBuilder(producer: self).withTransaction(transaction)
     }
 }

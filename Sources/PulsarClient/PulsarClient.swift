@@ -54,6 +54,33 @@ public final class PulsarClient: PulsarClientProtocol {
         let statsInterval: TimeInterval
         let configuration: ClientConfiguration
         let tracker: ClientTracker
+        let transactionCoordinators: [TransactionCoordinator]
+        
+        init(serviceUrl: String, logger: Logger, eventLoopGroup: EventLoopGroup,
+             connectionPool: ConnectionPool, authentication: Authentication?,
+             operationTimeout: TimeInterval, statsInterval: TimeInterval,
+             configuration: ClientConfiguration, tracker: ClientTracker) {
+            self.serviceUrl = serviceUrl
+            self.logger = logger
+            self.eventLoopGroup = eventLoopGroup
+            self.connectionPool = connectionPool
+            self.authentication = authentication
+            self.operationTimeout = operationTimeout
+            self.statsInterval = statsInterval
+            self.configuration = configuration
+            self.tracker = tracker
+            
+            // Initialize transaction coordinators (default 16 coordinators)
+            var coordinators: [TransactionCoordinator] = []
+            for tcId in 0..<16 {
+                let coordinator = TransactionCoordinatorClient(
+                    connectionPool: connectionPool,
+                    tcId: UInt64(tcId)
+                )
+                coordinators.append(coordinator)
+            }
+            self.transactionCoordinators = coordinators
+        }
     }
     
     private static let implementationsLock = NSLock()
@@ -203,6 +230,24 @@ public final class PulsarClient: PulsarClientProtocol {
         return reader as any ReaderProtocol<T>
     }
     
+    public func newTransaction() -> TransactionBuilder {
+        let impl = implementation
+        // Select a transaction coordinator based on hash
+        let coordinatorIndex = Int.random(in: 0..<impl.transactionCoordinators.count)
+        let coordinator = impl.transactionCoordinators[coordinatorIndex]
+        return TransactionBuilderImpl(coordinator: coordinator)
+    }
+    
+    public func newMultiTopicProducer<T: Sendable>(
+        topics: [String],
+        schema: Schema<T>,
+        configure: (MultiTopicProducerBuilder<T>) -> Void
+    ) async throws -> MultiTopicProducer<T> {
+        let builder = MultiTopicProducerBuilder(client: self, topics: topics, schema: schema)
+        configure(builder)
+        return try await builder.build()
+    }
+    
     // MARK: - Internal Factory Methods
     
     func createProducer<T: Sendable>(options: ProducerOptions<T>) async throws -> ProducerImpl<T> {
@@ -301,7 +346,8 @@ public final class PulsarClient: PulsarClientProtocol {
             configuration: options,
             logger: implementation.logger,
             channelManager: channelManager,
-            tracker: implementation.tracker
+            tracker: implementation.tracker,
+            client: self
         )
         
         // Set up message handler to route messages from channel to consumer

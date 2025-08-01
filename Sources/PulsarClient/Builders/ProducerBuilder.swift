@@ -125,6 +125,18 @@ public final class ProducerBuilder<T> where T: Sendable {
         return self
     }
     
+    @discardableResult
+    public func intercept(_ interceptors: any ProducerInterceptor<T>...) -> Self {
+        options = options.withInterceptors(options.interceptors + interceptors)
+        return self
+    }
+    
+    @discardableResult
+    public func intercept(_ interceptors: [any ProducerInterceptor<T>]) -> Self {
+        options = options.withInterceptors(options.interceptors + interceptors)
+        return self
+    }
+    
     // Dynamic member lookup for accessing options properties
     public subscript<Value>(dynamicMember keyPath: KeyPath<ProducerOptions<T>, Value>) -> Value {
         return options[keyPath: keyPath]
