@@ -23,7 +23,7 @@ services:
     image: ghcr.io/shopify/toxiproxy:2.11.0
     container_name: toxiproxy
     ports:
-      - "8475:8474"  # ← Use 8475 instead of 8474
+      - "8474:8474"  # ← Use 8474 instead of 8474
       - "16650:16650"
     # No healthcheck possible - this is a distroless container
     depends_on:
