@@ -34,7 +34,6 @@ struct OAuth2AuthenticationTests {
     #expect(config.scope == "read write")
   }
 
-
   @Test("Authentication Factory OAuth2 Methods")
   func testAuthenticationFactoryOAuth2Methods() {
     let issuerUrl = URL(string: "https://example.com/oauth/token")!
@@ -54,7 +53,6 @@ struct OAuth2AuthenticationTests {
       scope: "read"
     )
     #expect(auth2 is OAuth2Authentication)
-
 
     let config = OAuth2Configuration(
       issuerUrl: issuerUrl,

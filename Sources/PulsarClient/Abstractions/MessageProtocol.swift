@@ -16,67 +16,66 @@ import Foundation
 
 /// An abstraction for a Pulsar message.
 public protocol MessageProtocol: Sendable {
-    /// The unique identifier for this message.
-    var messageId: MessageId { get }
-    
-    /// The raw payload of the message.
-    var data: Data { get }
-    
-    /// The name of the topic this message was published to.
-    var topic: String { get }
-    
-    /// The properties attached to the message.
-    var properties: [String: String] { get }
-    
-    /// The event time associated with the message, if any.
-    /// This is a user-defined timestamp.
-    var eventTime: UInt64 { get }
-    
-    /// The timestamp of when the message was published.
-    /// This is set by the producer.
-    var publishTime: UInt64 { get }
-    
-    /// The timestamp of when the message was received by the broker.
-    var brokerPublishTime: UInt64 { get }
-    
-    /// The timestamp of when the message was delivered to the consumer.
-    var deliveredTime: UInt64 { get }
-    
-    /// The sequence ID of the message.
-    var sequenceId: UInt64 { get }
-    
-    /// The name of the producer who sent the message.
-    var producerName: String? { get }
-    
-    /// The number of times this message has been redelivered.
-    var redeliveryCount: UInt32 { get }
-    
-    /// The key of the message, if any.
-    var key: String? { get }
+  /// The unique identifier for this message.
+  var messageId: MessageId { get }
 
-    /// The raw bytes of the message key, if any.
-    var keyBytes: Data { get }
+  /// The raw payload of the message.
+  var data: Data { get }
 
-    /// Acknowledges the successful processing of the message.
-    func acknowledge() async throws
+  /// The name of the topic this message was published to.
+  var topic: String { get }
 
-    /// Acknowledges the successful processing of all messages up to this one.
-    func acknowledgeCumulative() async throws
+  /// The properties attached to the message.
+  var properties: [String: String] { get }
 
-    /// Signals that the message was not processed successfully.
-    func nack() async throws
-    
-    /// Decodes the message payload using a specific schema.
-    func value<T>(using schema: Schema<T>) async throws -> T
+  /// The event time associated with the message, if any.
+  /// This is a user-defined timestamp.
+  var eventTime: UInt64 { get }
+
+  /// The timestamp of when the message was published.
+  /// This is set by the producer.
+  var publishTime: UInt64 { get }
+
+  /// The timestamp of when the message was received by the broker.
+  var brokerPublishTime: UInt64 { get }
+
+  /// The timestamp of when the message was delivered to the consumer.
+  var deliveredTime: UInt64 { get }
+
+  /// The sequence ID of the message.
+  var sequenceId: UInt64 { get }
+
+  /// The name of the producer who sent the message.
+  var producerName: String? { get }
+
+  /// The number of times this message has been redelivered.
+  var redeliveryCount: UInt32 { get }
+
+  /// The key of the message, if any.
+  var key: String? { get }
+
+  /// The raw bytes of the message key, if any.
+  var keyBytes: Data { get }
+
+  /// Acknowledges the successful processing of the message.
+  func acknowledge() async throws
+
+  /// Acknowledges the successful processing of all messages up to this one.
+  func acknowledgeCumulative() async throws
+
+  /// Signals that the message was not processed successfully.
+  func nack() async throws
+
+  /// Decodes the message payload using a specific schema.
+  func value<T>(using schema: Schema<T>) async throws -> T
 }
-
 
 /// An abstraction for a typed Pulsar message.
 public protocol TypedMessageProtocol<TMessage>: MessageProtocol {
-    /// The type of the message payload.
-    associatedtype TMessage: Sendable
-    
-    /// The deserialized value of the message payload.
-    /// This method will decode the raw `data` using the consumer's schema.
-    func value() async throws -> TMessage
-} 
+  /// The type of the message payload.
+  associatedtype TMessage: Sendable
+
+  /// The deserialized value of the message payload.
+  /// This method will decode the raw `data` using the consumer's schema.
+  func value() async throws -> TMessage
+}

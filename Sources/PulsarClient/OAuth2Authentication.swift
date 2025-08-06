@@ -1,7 +1,7 @@
 import Foundation
 
 #if canImport(FoundationNetworking)
-import FoundationNetworking
+  import FoundationNetworking
 #endif
 
 public final class OAuth2Authentication: Authentication, Sendable {
@@ -19,7 +19,7 @@ public final class OAuth2Authentication: Authentication, Sendable {
     let token = try await tokenProvider.getToken()
     return Data(token.utf8)
   }
-  
+
   public func needsRefresh() async -> Bool {
     return await tokenProvider.needsRefresh()
   }
@@ -66,10 +66,10 @@ actor OAuth2TokenProvider {
     cachedToken = token
     return token.accessToken
   }
-  
+
   func needsRefresh() -> Bool {
     guard let cached = cachedToken else {
-      return true // No token, needs refresh
+      return true  // No token, needs refresh
     }
     // Refresh if token will expire in next 5 minutes
     return cached.expiresAt.timeIntervalSinceNow < 300
@@ -96,7 +96,6 @@ actor OAuth2TokenProvider {
     if let scope = configuration.scope {
       parameters["scope"] = scope
     }
-
 
     let bodyString =
       parameters
