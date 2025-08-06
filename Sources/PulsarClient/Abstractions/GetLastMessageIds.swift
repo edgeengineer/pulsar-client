@@ -16,9 +16,9 @@ import Foundation
 
 /// A protocol for getting the Message IDs of the last messages on a topic.
 public protocol GetLastMessageIds: Sendable {
-    /// Gets the Message IDs of the last messages on the topic.
-    ///
-    /// - Returns: An array of `MessageId` objects for the last messages.
-    /// - Throws: A `PulsarClientError` if the operation fails.
-    func lastMessageIds() async throws -> [MessageId]
-} 
+  /// Gets the Message IDs of the last messages on the topic.
+  ///
+  /// - Returns: An array of `MessageId` objects for the last messages.
+  /// - Throws: A `PulsarClientError` if the operation fails.
+  func lastMessageIds() async throws -> [MessageId]
+}

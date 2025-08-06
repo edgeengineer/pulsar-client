@@ -16,17 +16,17 @@ import Foundation
 
 /// Protocol for components that can receive messages
 public protocol Receivable<T>: Sendable where T: Sendable {
-    associatedtype T
-    
-    /// Receive a single message
-    func receive() async throws -> Message<T>
-    
-    /// Receive a single message with timeout
-    func receive(timeout: TimeInterval) async throws -> Message<T>
-    
-    /// Receive multiple messages
-    func receiveBatch(maxMessages: Int) async throws -> [Message<T>]
-    
-    /// Receive multiple messages with timeout
-    func receiveBatch(maxMessages: Int, timeout: TimeInterval) async throws -> [Message<T>]
+  associatedtype T
+
+  /// Receive a single message
+  func receive() async throws -> Message<T>
+
+  /// Receive a single message with timeout
+  func receive(timeout: TimeInterval) async throws -> Message<T>
+
+  /// Receive multiple messages
+  func receiveBatch(maxMessages: Int) async throws -> [Message<T>]
+
+  /// Receive multiple messages with timeout
+  func receiveBatch(maxMessages: Int, timeout: TimeInterval) async throws -> [Message<T>]
 }

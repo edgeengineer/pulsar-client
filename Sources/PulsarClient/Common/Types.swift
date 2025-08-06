@@ -31,22 +31,22 @@ public typealias ProtocolVersion = Int32
 
 /// Hashing scheme for message routing
 public enum HashingScheme: String, Sendable, CaseIterable {
-    /// Java string hash
-    case javaStringHash = "JavaStringHash"
-    
-    /// Murmur3 32-bit hash
-    case murmur3_32Hash = "Murmur3_32Hash"
+  /// Java string hash
+  case javaStringHash = "JavaStringHash"
+
+  /// Murmur3 32-bit hash
+  case murmur3_32Hash = "Murmur3_32Hash"
 }
 
 // MARK: - Crypto Key Reader
 
 /// Protocol for reading crypto keys
 public protocol CryptoKeyReader: Sendable {
-    /// Get the public key for encryption
-    func getPublicKey(keyName: String, metadata: [String: String]) async throws -> Data
-    
-    /// Get the private key for decryption
-    func getPrivateKey(keyName: String, metadata: [String: String]) async throws -> Data
+  /// Get the public key for encryption
+  func getPublicKey(keyName: String, metadata: [String: String]) async throws -> Data
+
+  /// Get the private key for decryption
+  func getPrivateKey(keyName: String, metadata: [String: String]) async throws -> Data
 }
 
 // MARK: - Authentication
@@ -58,35 +58,35 @@ public protocol CryptoKeyReader: Sendable {
 
 /// Physical address of a broker
 public struct PhysicalAddress: Sendable, Hashable {
-    public let host: String
-    public let port: Int
-    
-    public init(host: String, port: Int) {
-        self.host = host
-        self.port = port
-    }
-    
-    public var description: String {
-        return "\(host):\(port)"
-    }
+  public let host: String
+  public let port: Int
+
+  public init(host: String, port: Int) {
+    self.host = host
+    self.port = port
+  }
+
+  public var description: String {
+    return "\(host):\(port)"
+  }
 }
 
 /// Logical address of a broker
 public struct LogicalAddress: Sendable, Hashable {
-    public let url: String
-    
-    public init(url: String) {
-        self.url = url
-    }
+  public let url: String
+
+  public init(url: String) {
+    self.url = url
+  }
 }
 
 /// Broker address combining logical and physical addresses
 public struct BrokerAddress: Sendable, Hashable {
-    public let logical: LogicalAddress
-    public let physical: PhysicalAddress
-    
-    public init(logical: LogicalAddress, physical: PhysicalAddress) {
-        self.logical = logical
-        self.physical = physical
-    }
+  public let logical: LogicalAddress
+  public let physical: PhysicalAddress
+
+  public init(logical: LogicalAddress, physical: PhysicalAddress) {
+    self.logical = logical
+    self.physical = physical
+  }
 }

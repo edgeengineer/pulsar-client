@@ -16,55 +16,55 @@ import Foundation
 
 /// Schema definition for JSON messages using Codable
 public struct JSONSchema<T: Codable>: SchemaProtocol {
-    public let schemaInfo: SchemaInfo
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
-    
-    public init(
-        encoder: JSONEncoder = JSONEncoder(),
-        decoder: JSONDecoder = JSONDecoder()
-    ) {
-        self.encoder = encoder
-        self.decoder = decoder
-        
-        // Generate JSON schema if possible
-        let schemaString = Self.generateJSONSchema(for: T.self)
-        let schemaData = schemaString?.data(using: .utf8)
-        
-        self.schemaInfo = SchemaInfo(
-            name: String(describing: T.self),
-            type: .json,
-            schema: schemaData,
-            properties: ["__jsr310ConversionEnabled": "false"]
-        )
+  public let schemaInfo: SchemaInfo
+  private let encoder: JSONEncoder
+  private let decoder: JSONDecoder
+
+  public init(
+    encoder: JSONEncoder = JSONEncoder(),
+    decoder: JSONDecoder = JSONDecoder()
+  ) {
+    self.encoder = encoder
+    self.decoder = decoder
+
+    // Generate JSON schema if possible
+    let schemaString = Self.generateJSONSchema(for: T.self)
+    let schemaData = schemaString?.data(using: .utf8)
+
+    self.schemaInfo = SchemaInfo(
+      name: String(describing: T.self),
+      type: .json,
+      schema: schemaData,
+      properties: ["__jsr310ConversionEnabled": "false"]
+    )
+  }
+
+  public func encode(_ value: T) throws -> Data {
+    do {
+      return try encoder.encode(value)
+    } catch {
+      throw PulsarClientError.schemaSerializationFailed("Failed to encode JSON: \(error)")
     }
-    
-    public func encode(_ value: T) throws -> Data {
-        do {
-            return try encoder.encode(value)
-        } catch {
-            throw PulsarClientError.schemaSerializationFailed("Failed to encode JSON: \(error)")
-        }
+  }
+
+  public func decode(_ data: Data) throws -> T {
+    do {
+      return try decoder.decode(T.self, from: data)
+    } catch {
+      throw PulsarClientError.schemaSerializationFailed("Failed to decode JSON: \(error)")
     }
-    
-    public func decode(_ data: Data) throws -> T {
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            throw PulsarClientError.schemaSerializationFailed("Failed to decode JSON: \(error)")
-        }
-    }
-    
-    // Helper function to generate basic JSON schema
-    private static func generateJSONSchema(for type: T.Type) -> String? {
-        // This is a simplified version. In production, you might want to use
-        // a more sophisticated JSON schema generator
-        return """
-        {
-            "type": "object",
-            "title": "\(String(describing: type))",
-            "properties": {}
-        }
-        """
-    }
+  }
+
+  // Helper function to generate basic JSON schema
+  private static func generateJSONSchema(for type: T.Type) -> String? {
+    // This is a simplified version. In production, you might want to use
+    // a more sophisticated JSON schema generator
+    return """
+      {
+          "type": "object",
+          "title": "\(String(describing: type))",
+          "properties": {}
+      }
+      """
+  }
 }

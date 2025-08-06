@@ -16,24 +16,24 @@ import Foundation
 
 /// Schema definition for raw bytes messages
 public struct BytesSchema: SchemaProtocol {
-    public typealias T = Data
-    
-    public let schemaInfo: SchemaInfo
-    
-    public init() {
-        self.schemaInfo = SchemaInfo(
-            name: "Bytes",
-            type: .bytes,
-            schema: nil,
-            properties: [:]
-        )
-    }
-    
-    public func encode(_ value: Data) throws -> Data {
-        return value
-    }
-    
-    public func decode(_ data: Data) throws -> Data {
-        return data
-    }
+  public typealias T = Data
+
+  public let schemaInfo: SchemaInfo
+
+  public init() {
+    self.schemaInfo = SchemaInfo(
+      name: "Bytes",
+      type: .bytes,
+      schema: nil,
+      properties: [:]
+    )
+  }
+
+  public func encode(_ value: Data) throws -> Data {
+    return value
+  }
+
+  public func decode(_ data: Data) throws -> Data {
+    return data
+  }
 }
