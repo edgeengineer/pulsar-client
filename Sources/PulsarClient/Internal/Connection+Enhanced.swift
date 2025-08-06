@@ -20,19 +20,23 @@ extension Connection {
       throw PulsarClientError.protocolError("Command missing request ID")
     }
 
-    logger.debug("Sending request", metadata: [
-      "requestId": "\(requestId)",
-      "commandType": "\(frame.command.type)"
-    ])
+    logger.debug(
+      "Sending request",
+      metadata: [
+        "requestId": "\(requestId)",
+        "commandType": "\(frame.command.type)",
+      ])
 
     // Create continuation for response
     let responseContinuation = AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.makeStream()
 
     // Register the response handler BEFORE sending (critical for preventing race conditions)
     pendingRequests[requestId] = responseContinuation.continuation
-    logger.debug("Registered response handler", metadata: [
-      "requestId": "\(requestId)"
-    ])
+    logger.debug(
+      "Registered response handler",
+      metadata: [
+        "requestId": "\(requestId)"
+      ])
 
     defer {
       logger.debug("Cleaning up request ID: \(requestId)")
@@ -52,24 +56,32 @@ extension Connection {
 
     // Wait for response with timeout
     let response = try await withTimeout(seconds: 30) { [logger] in
-      logger.debug("Waiting for response", metadata: [
-        "requestId": "\(requestId)"
-      ])
-      for try await command in responseContinuation.stream {
-        logger.debug("Processing response", metadata: [
-          "requestId": "\(requestId)",
-          "commandType": "\(command.type)"
+      logger.debug(
+        "Waiting for response",
+        metadata: [
+          "requestId": "\(requestId)"
         ])
-        if let response = try? Response(from: command) {
-          logger.debug("Successfully parsed response", metadata: [
-            "requestId": "\(requestId)"
+      for try await command in responseContinuation.stream {
+        logger.debug(
+          "Processing response",
+          metadata: [
+            "requestId": "\(requestId)",
+            "commandType": "\(command.type)",
           ])
+        if let response = try? Response(from: command) {
+          logger.debug(
+            "Successfully parsed response",
+            metadata: [
+              "requestId": "\(requestId)"
+            ])
           return response
         }
-        logger.warning("Failed to parse response", metadata: [
-          "requestId": "\(requestId)",
-          "expectedType": "\(Response.self)"
-        ])
+        logger.warning(
+          "Failed to parse response",
+          metadata: [
+            "requestId": "\(requestId)",
+            "expectedType": "\(Response.self)",
+          ])
         throw PulsarClientError.protocolError("Unexpected response type")
       }
       logger.error("No response received for request ID: \(requestId)")
@@ -101,10 +113,12 @@ extension Connection {
     if let requestId = getResponseRequestId(from: command),
       let continuation = pendingRequests.removeValue(forKey: requestId)
     {
-      logger.debug("Found matching request", metadata: [
-        "requestId": "\(requestId)",
-        "commandType": "\(command.type)"
-      ])
+      logger.debug(
+        "Found matching request",
+        metadata: [
+          "requestId": "\(requestId)",
+          "commandType": "\(command.type)",
+        ])
       continuation.yield(command)
       continuation.finish()
       return

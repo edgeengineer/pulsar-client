@@ -233,35 +233,47 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         "Producer not connected after \(maxRetries) retry attempts")
     }
 
-    // Assign sequence ID if not set
+    // Assign sequence ID synchronously to guarantee ordering
     var metadata = metadata
     if metadata.sequenceId == nil {
       metadata.sequenceId = nextSequenceId()
     }
+    
+    // For optimal performance with guaranteed ordering:
+    // 1. Sequence ID assignment is synchronous (cheap, ensures order)
+    // 2. Heavy work (encoding, metadata creation) happens async
+    // 3. BUT we need to ensure enqueue operations happen in sequence order
+    
+    // Capture the sequence ID for async work
+    let capturedSequenceId = metadata.sequenceId!
+    
+    logger.debug(
+      "Sending message",
+      metadata: [
+        "producerName": "\(producerName)",
+        "sequenceId": "\(capturedSequenceId)",
+        "publishTime": "\(Date())",
+      ])
 
-    // Create the send operation with a continuation (like C# TaskCompletionSource)
+    // Option 1: Do encoding synchronously (current approach for safety)
+    // This ensures messages are processed in exact sequence order
+    // Performance impact is usually minimal unless messages are very large
+    let payload = try schema.encode(message)
+    
+    // Create metadata (this is async but lightweight)
+    let protoMetadata = await connection.commandBuilder.createMessageMetadata(
+      producerName: producerName,
+      sequenceId: capturedSequenceId,
+      publishTime: Date(),
+      properties: metadata.properties,
+      compressionType: configuration.compressionType
+    )
+
+    // Create the send operation with a continuation
     do {
       return try await withCheckedThrowingContinuation { continuation in
         Task {
           do {
-            // Encode message
-            let payload = try self.schema.encode(message)
-
-            // Create metadata with guaranteed sequence ID and compression type
-            let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
-              producerName: self.producerName,
-              sequenceId: metadata.sequenceId!,
-              publishTime: Date(),
-              properties: metadata.properties,
-              compressionType: self.configuration.compressionType
-            )
-
-            logger.debug("Sending message", metadata: [
-              "producerName": "\(self.producerName)",
-              "sequenceId": "\(metadata.sequenceId!)",
-              "publishTime": "\(Date())"
-            ])
-
             // Create send operation
             let sendOp = SendOperation<T>(
               metadata: protoMetadata,
@@ -384,35 +396,43 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
   private func runMessageDispatcher() async {
-    logger.debug("Starting message dispatcher", metadata: [
-      "producer": "\(producerName)"
-    ])
+    logger.debug(
+      "Starting message dispatcher",
+      metadata: [
+        "producer": "\(producerName)"
+      ])
 
     while !Task.isCancelled && _state == .connected {
+      // Try to get an operation with a timeout to avoid hanging
+      let sendOp: SendOperation<T>
       do {
-        // Get next operation from queue
-        let sendOp = try await sendQueue.dequeue()
-
-        // Get the producer channel
-        let channelManager = await connection.getChannelManager()
-        guard let producerChannel = await channelManager.getProducer(id: id) else {
-          sendOp.fail(with: PulsarClientError.producerBusy("Producer channel not found"))
-          continue
-        }
-
-        // Process the send operation
-        await processSendOperation(sendOp, channel: producerChannel)
-
+        sendOp = try await sendQueue.dequeue()
       } catch {
-        if !Task.isCancelled {
-          logger.error("Message dispatcher error: \(error)")
+        // If dequeue was cancelled or failed, check if we should continue
+        if Task.isCancelled || _state != .connected {
+          break
         }
+        // Add a small delay to prevent tight error loops
+        try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        continue
       }
+
+      // Get the producer channel
+      let channelManager = await connection.getChannelManager()
+      guard let producerChannel = await channelManager.getProducer(id: id) else {
+        sendOp.fail(with: PulsarClientError.producerBusy("Producer channel not found"))
+        continue
+      }
+
+      // Process the send operation (this is async but doesn't throw)
+      await processSendOperation(sendOp, channel: producerChannel)
     }
 
-    logger.debug("Message dispatcher stopped", metadata: [
-      "producer": "\(producerName)"
-    ])
+    logger.debug(
+      "Message dispatcher stopped",
+      metadata: [
+        "producer": "\(producerName)"
+      ])
   }
 
   /// Process a single send operation (like C# channel.Send)

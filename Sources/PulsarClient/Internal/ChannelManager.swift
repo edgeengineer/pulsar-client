@@ -59,10 +59,12 @@ actor ProducerChannel: PulsarChannel {
 
   /// Handle incoming send receipt
   func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
-    logger.debug("ProducerChannel handling send receipt", metadata: [
-      "sequenceId": "\(receipt.sequenceID)",
-      "pendingSends": "\(pendingSends.keys.sorted())"
-    ])
+    logger.debug(
+      "ProducerChannel handling send receipt",
+      metadata: [
+        "sequenceId": "\(receipt.sequenceID)",
+        "pendingSends": "\(pendingSends.keys.sorted())",
+      ])
 
     if let wrapper = pendingSends.removeValue(forKey: receipt.sequenceID) {
       let messageId = MessageId(

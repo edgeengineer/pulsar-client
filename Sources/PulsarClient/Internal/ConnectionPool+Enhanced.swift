@@ -19,10 +19,12 @@ extension ConnectionPool {
 
   /// Enhanced lookup with retries and caching
   func lookup(topic: String) async throws -> BrokerLookupResult {
-    logger.debug("Starting topic lookup", metadata: [
-      "topic": "\(topic)",
-      "serviceUrl": "\(serviceUrl)"
-    ])
+    logger.debug(
+      "Starting topic lookup",
+      metadata: [
+        "topic": "\(topic)",
+        "serviceUrl": "\(serviceUrl)",
+      ])
 
     // Try to get a connection to the service URL
     let connection = try await getConnection(for: serviceUrl)
@@ -48,10 +50,12 @@ extension ConnectionPool {
 
         case .redirect(let brokerUrl, _):
           // Need to connect to a different broker for lookup
-          logger.debug("Topic lookup redirected", metadata: [
-            "topic": "\(topic)",
-            "redirectUrl": "\(brokerUrl)"
-          ])
+          logger.debug(
+            "Topic lookup redirected",
+            metadata: [
+              "topic": "\(topic)",
+              "redirectUrl": "\(brokerUrl)",
+            ])
 
           // If we should proxy through service URL, use the original connection
           if lookupResponse.proxyThroughServiceUrl {
@@ -80,11 +84,13 @@ extension ConnectionPool {
           throw error
         }
 
-        logger.warning("Lookup attempt failed", metadata: [
-          "attempt": "\(attempts)",
-          "topic": "\(topic)",
-          "error": "\(error)"
-        ])
+        logger.warning(
+          "Lookup attempt failed",
+          metadata: [
+            "attempt": "\(attempts)",
+            "topic": "\(topic)",
+            "error": "\(error)",
+          ])
 
         // Wait before retry with exponential backoff
         let backoffSeconds = Double(attempts) * 2.0
