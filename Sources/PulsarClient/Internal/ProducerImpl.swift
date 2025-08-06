@@ -25,6 +25,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   private let sendQueue: SendQueue<T>
   private var dispatcherTask: Task<Void, Never>?
 
+  // Serial executor to maintain message order
+  private let sendOrderQueue = DispatchQueue(label: "sendOrder", qos: .userInitiated)
+
   // Fault tolerance components
   private let retryExecutor: RetryExecutor
   private let stateManager: ProducerStateManager
@@ -215,79 +218,58 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   {
     let maxRetries = 3
 
-    // Check if we need to attempt reconnection
-    if _state != .connected {
-      if retryCount < maxRetries {
-        logger.info(
-          "Producer not connected, attempting recovery (attempt \(retryCount + 1)/\(maxRetries))")
-        await attemptRecovery()
-
-        // Wait a bit before retry
-        try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
-
-        if _state == .connected {
-          return try await sendWithRetry(message, metadata: metadata, retryCount: retryCount + 1)
-        }
-      }
-      throw PulsarClientError.producerBusy(
-        "Producer not connected after \(maxRetries) retry attempts")
-    }
-
-    // Assign sequence ID synchronously to guarantee ordering
-    var metadata = metadata
-    if metadata.sequenceId == nil {
-      metadata.sequenceId = nextSequenceId()
-    }
-    
-    // For optimal performance with guaranteed ordering:
-    // 1. Sequence ID assignment is synchronous (cheap, ensures order)
-    // 2. Heavy work (encoding, metadata creation) happens async
-    // 3. BUT we need to ensure enqueue operations happen in sequence order
-    
-    // Capture the sequence ID for async work
-    let capturedSequenceId = metadata.sequenceId!
-    
-    logger.debug(
-      "Sending message",
-      metadata: [
-        "producerName": "\(producerName)",
-        "sequenceId": "\(capturedSequenceId)",
-        "publishTime": "\(Date())",
-      ])
-
-    // Option 1: Do encoding synchronously (current approach for safety)
-    // This ensures messages are processed in exact sequence order
-    // Performance impact is usually minimal unless messages are very large
-    let payload = try schema.encode(message)
-    
-    // Create metadata (this is async but lightweight)
-    let protoMetadata = await connection.commandBuilder.createMessageMetadata(
-      producerName: producerName,
-      sequenceId: capturedSequenceId,
-      publishTime: Date(),
-      properties: metadata.properties,
-      compressionType: configuration.compressionType
-    )
-
-    // Create the send operation with a continuation
     do {
-      return try await withCheckedThrowingContinuation { continuation in
-        Task {
-          do {
-            // Create send operation
-            let sendOp = SendOperation<T>(
-              metadata: protoMetadata,
-              payload: payload,
-              continuation: continuation
-            )
+      // Check if we need to attempt reconnection
+      if _state != .connected {
+        if retryCount < maxRetries {
+          logger.info(
+            "Producer not connected, attempting recovery (attempt \(retryCount + 1)/\(maxRetries))")
+          await attemptRecovery()
 
-            // Enqueue the operation
-            try await self.sendQueue.enqueue(sendOp)
-          } catch {
-            continuation.resume(throwing: error)
+          // Wait a bit before retry
+          try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+
+          if _state == .connected {
+            return try await sendWithRetry(message, metadata: metadata, retryCount: retryCount + 1)
           }
         }
+        throw PulsarClientError.producerBusy(
+          "Producer not connected after \(maxRetries) retry attempts")
       }
+
+      // Assign sequence ID synchronously to guarantee ordering
+      var metadata = metadata
+      if metadata.sequenceId == nil {
+        metadata.sequenceId = nextSequenceId()
+      }
+
+      // Capture the sequence ID for async work
+      let capturedSequenceId = metadata.sequenceId!
+
+      logger.debug(
+        "Sending message",
+        metadata: [
+          "producerName": "\(producerName)",
+          "sequenceId": "\(capturedSequenceId)",
+          "publishTime": "\(Date())",
+        ])
+
+      // Do encoding synchronously to ensure ordering
+      let payload = try schema.encode(message)
+
+      // Create metadata (this is async but lightweight)
+      let protoMetadata = await connection.commandBuilder.createMessageMetadata(
+        producerName: producerName,
+        sequenceId: capturedSequenceId,
+        publishTime: Date(),
+        properties: metadata.properties,
+        compressionType: configuration.compressionType
+      )
+
+      // Create and enqueue the send operation
+      // The key insight: call a private actor method to serialize enqueue operations
+      return try await enqueueAndWait(metadata: protoMetadata, payload: payload)
+
     } catch {
       // Check if this is a connection-related error and we can retry
       if retryCount < maxRetries && isConnectionError(error) {
@@ -382,6 +364,30 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     let id = sequenceId
     sequenceId += 1
     return id
+  }
+
+  /// Serialize enqueue operations to maintain strict FIFO ordering
+  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
+    -> MessageId
+  {
+    return try await withCheckedThrowingContinuation { continuation in
+      let sendOp = SendOperation<T>(
+        metadata: metadata,
+        payload: payload,
+        continuation: continuation
+      )
+
+      // Use a serial dispatch queue to ensure ordering
+      sendOrderQueue.async {
+        Task {
+          do {
+            try await self.sendQueue.enqueue(sendOp)
+          } catch {
+            continuation.resume(throwing: error)
+          }
+        }
+      }
+    }
   }
 
   private func updateState(_ newState: ClientState) {
