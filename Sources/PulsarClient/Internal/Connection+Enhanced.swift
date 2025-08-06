@@ -71,6 +71,44 @@ extension Connection {
         try await sendFrame(frame)
     }
     
+    /// Send a BaseCommand and optionally wait for response
+    func sendCommand(_ command: Pulsar_Proto_BaseCommand, expectResponse: Bool = false) async throws -> Pulsar_Proto_BaseCommand {
+        let frame = PulsarFrame(command: command, metadata: nil, payload: nil)
+        
+        if expectResponse {
+            guard let requestId = getRequestId(from: command) else {
+                throw PulsarClientError.protocolError("Command missing request ID")
+            }
+            
+            // Create continuation for response
+            let responseContinuation = AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.makeStream()
+            
+            // Register the response handler BEFORE sending
+            pendingRequests[requestId] = responseContinuation.continuation
+            
+            defer {
+                pendingRequests.removeValue(forKey: requestId)
+                responseContinuation.continuation.finish()
+            }
+            
+            // Send the frame
+            try await sendFrame(frame)
+            
+            // Wait for response with timeout
+            let response = try await withTimeout(seconds: 30) { [logger] in
+                for try await command in responseContinuation.stream {
+                    return command
+                }
+                throw PulsarClientError.protocolError("No response received")
+            }
+            
+            return response
+        } else {
+            try await sendCommand(frame)
+            return command
+        }
+    }
+    
     /// Handle incoming frame with full data
     func handleIncomingFrame(_ frame: PulsarFrame) {
         handleIncomingCommand(frame.command, frame: frame)

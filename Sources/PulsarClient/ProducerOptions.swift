@@ -92,6 +92,9 @@ public struct ProducerOptions<TMessage>: Sendable where TMessage: Sendable {
     /// State change handler for the producer.
     public var stateChangedHandler: (@Sendable (ProducerStateChanged<TMessage>) -> Void)?
     
+    /// Message interceptors for the producer.
+    public var interceptors: [any ProducerInterceptor<TMessage>]
+    
     // MARK: - Initialization
     
     public init(topic: String, schema: Schema<TMessage>) {
@@ -112,6 +115,7 @@ public struct ProducerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.maxPendingMessages = Self.defaultMaxPendingMessages
         self.encryptionKeys = []
         self.producerProperties = [:]
+        self.interceptors = []
     }
     
     // MARK: - Validation
@@ -240,6 +244,20 @@ public struct ProducerOptions<TMessage>: Sendable where TMessage: Sendable {
     public func withStateChangedHandler(_ handler: (@Sendable (ProducerStateChanged<TMessage>) -> Void)?) -> Self {
         var copy = self
         copy.stateChangedHandler = handler
+        return copy
+    }
+    
+    @discardableResult
+    public func withInterceptors(_ interceptors: [any ProducerInterceptor<TMessage>]) -> Self {
+        var copy = self
+        copy.interceptors = interceptors
+        return copy
+    }
+    
+    @discardableResult
+    public func withInterceptor(_ interceptor: any ProducerInterceptor<TMessage>) -> Self {
+        var copy = self
+        copy.interceptors.append(interceptor)
         return copy
     }
 }

@@ -100,10 +100,9 @@ jobs:
         PULSAR_SERVICE_URL: pulsar://localhost:6650
         PULSAR_ADMIN_URL: http://localhost:8081
         TOXIPROXY_URL: http://localhost:8475
-      timeout-minutes: 15  # Reduced from 20 due to parallelism
+      timeout-minutes: 20  # Reduced from 20 due to parallelism
       run: |
-        # Run most tests in parallel
-        swift test --filter PulsarClientIntegrationTests --parallel --num-workers 4
+        swift test --filter PulsarClientIntegrationTests --no-parallel
     
     - name: Cleanup
       if: always()

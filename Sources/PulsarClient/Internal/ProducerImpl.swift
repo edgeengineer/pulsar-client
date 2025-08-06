@@ -30,6 +30,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     private let stateManager: ProducerStateManager
     private let exceptionHandler: ExceptionHandler
     
+    // Interceptors
+    private let interceptors: ProducerInterceptors<T>?
+    
     public let topic: String
     public nonisolated var state: ClientState { 
         ClientState.connected  // Simple fallback for nonisolated access
@@ -71,6 +74,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
             componentName: "Producer-\(String(describing: producerName))"
         )
         self.exceptionHandler = DefaultExceptionHandler(logger: logger)
+        
+        // Initialize interceptors if configured
+        if !configuration.interceptors.isEmpty {
+            self.interceptors = ProducerInterceptors(interceptors: configuration.interceptors)
+        } else {
+            self.interceptors = nil
+        }
         
         // Initialize batch builder if batching is enabled
         if configuration.batchingEnabled {
@@ -206,35 +216,62 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
             throw PulsarClientError.producerBusy("Producer not connected")
         }
         
+        // Create a Message object for interceptors
+        var msg = Message(
+            id: MessageId(ledgerId: 0, entryId: 0),  // Will be set after send
+            value: message,
+            key: metadata.key,
+            properties: metadata.properties,
+            eventTime: metadata.eventTime,
+            publishTime: Date(),
+            producerName: producerName,
+            sequenceId: metadata.sequenceId,
+            replicatedFrom: nil,
+            partitionKey: nil,
+            schemaVersion: nil,
+            topicName: topic,
+            redeliveryCount: 0,
+            data: nil
+        )
+        
+        // Process through interceptors if configured
+        if let interceptors = interceptors {
+            msg = try await interceptors.beforeSend(producer: self, message: msg)
+        }
+        
         // Assign sequence ID if not set
         var metadata = metadata
         if metadata.sequenceId == nil {
             metadata.sequenceId = nextSequenceId()
         }
         
+        // Store the message for interceptor notification
+        let interceptorMessage = msg
+        
         // Create the send operation with a continuation (like C# TaskCompletionSource)
         return try await withCheckedThrowingContinuation { continuation in
             Task {
                 do {
-                    // Encode message
-                    let payload = try self.schema.encode(message)
+                    // Encode message (use intercepted value)
+                    let payload = try self.schema.encode(msg.value)
                     
                     // Create metadata with guaranteed sequence ID and compression type
                     let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
                         producerName: self.producerName,
                         sequenceId: metadata.sequenceId!,
                         publishTime: Date(),
-                        properties: metadata.properties,
+                        properties: msg.properties.isEmpty ? metadata.properties : msg.properties,
                         compressionType: self.configuration.compressionType
                     )
-
-                    logger.info("Sending message with producer name \(self.producerName), sequence ID \(metadata.sequenceId!), publish time \(Date())")
                     
-                    // Create send operation
+                    // Create send operation with interceptor notification
                     let sendOp = SendOperation<T>(
                         metadata: protoMetadata,
                         payload: payload,
-                        continuation: continuation
+                        continuation: continuation,
+                        interceptorMessage: interceptorMessage,
+                        interceptors: self.interceptors,
+                        producer: self
                     )
                     
                     // Enqueue the operation

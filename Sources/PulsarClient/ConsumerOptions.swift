@@ -128,6 +128,12 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
     /// Receiver queue size. Default is 1000.
     public var receiverQueueSize: Int
     
+    /// Dead letter policy for handling failed messages.
+    public var deadLetterPolicy: DeadLetterPolicy?
+    
+    /// Message interceptors for the consumer.
+    public var interceptors: [any ConsumerInterceptor<TMessage>]
+    
     // MARK: - Initialization
     
     /// Initializes a new instance using the specified subscription name, topic and schema.
@@ -157,6 +163,8 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.patternAutoDiscoveryPeriod = 60.0
         self.maxPendingChunkedMessage = 10
         self.receiverQueueSize = 1000
+        self.deadLetterPolicy = nil
+        self.interceptors = []
     }
     
     /// Initializes a new instance using the specified subscription name, topics and schema.
@@ -186,6 +194,8 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.patternAutoDiscoveryPeriod = 60.0
         self.maxPendingChunkedMessage = 10
         self.receiverQueueSize = 1000
+        self.deadLetterPolicy = nil
+        self.interceptors = []
     }
     
     /// Initializes a new instance using the specified subscription name, topics pattern and schema.
@@ -215,6 +225,8 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         self.patternAutoDiscoveryPeriod = 60.0
         self.maxPendingChunkedMessage = 10
         self.receiverQueueSize = 1000
+        self.deadLetterPolicy = nil
+        self.interceptors = []
     }
     
     // MARK: - Validation
@@ -420,6 +432,27 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
     public func withReceiverQueueSize(_ size: Int) -> ConsumerOptions {
         var copy = self
         copy.receiverQueueSize = size
+        return copy
+    }
+    
+    /// Returns a new ConsumerOptions with dead letter policy set
+    public func withDeadLetterPolicy(_ policy: DeadLetterPolicy?) -> ConsumerOptions {
+        var copy = self
+        copy.deadLetterPolicy = policy
+        return copy
+    }
+    
+    /// Returns a new ConsumerOptions with interceptors set
+    public func withInterceptors(_ interceptors: [any ConsumerInterceptor<TMessage>]) -> ConsumerOptions {
+        var copy = self
+        copy.interceptors = interceptors
+        return copy
+    }
+    
+    /// Returns a new ConsumerOptions with an interceptor added
+    public func withInterceptor(_ interceptor: any ConsumerInterceptor<TMessage>) -> ConsumerOptions {
+        var copy = self
+        copy.interceptors.append(interceptor)
         return copy
     }
 }
