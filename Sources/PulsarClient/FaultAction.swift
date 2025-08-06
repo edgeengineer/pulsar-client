@@ -16,12 +16,12 @@ import Foundation
 
 /// Actions to take when an exception occurs during an operation
 public enum FaultAction: Sendable {
-    /// Rethrow the original exception
-    case rethrow
-    /// Retry the operation after a delay
-    case retry
-    /// Retry with a custom delay
-    case retryAfter(TimeInterval)
-    /// Fail permanently (don't retry)
-    case fail
+  /// Rethrow the original exception
+  case rethrow
+  /// Retry the operation after a delay
+  case retry
+  /// Retry with a custom delay
+  case retryAfter(TimeInterval)
+  /// Fail permanently (don't retry)
+  case fail
 }

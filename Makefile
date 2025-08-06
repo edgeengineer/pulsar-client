@@ -36,10 +36,10 @@ dev-setup: ## Set up development environment
 	./scripts/setup-dev.sh
 
 format: ## Format Swift code
-	swift-format -i -r Sources/ Tests/
+	swift format -i -r Sources/ Tests/
 
 lint: ## Lint Swift code
-	swift-format lint -r Sources/ Tests/
+	swift format lint -r Sources/ Tests/
 
 coverage: ## Generate and open HTML test coverage report (unit tests only)
 	./scripts/run-tests.sh --coverage-html

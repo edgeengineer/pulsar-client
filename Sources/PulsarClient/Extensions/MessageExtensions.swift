@@ -16,127 +16,128 @@ import Foundation
 
 // MARK: - Message Convenience Extensions
 
-public extension Message {
-    
-    /// Get a property value from the message
-    func property(for key: String) -> String? {
-        return properties[key]
-    }
-    
-    /// Check if the message has a specific property
-    func hasProperty(_ key: String) -> Bool {
-        return properties[key] != nil
-    }
-    
-    /// Get the age of the message (time since publication)
-    var age: TimeInterval {
-        return Date().timeIntervalSince(publishTime)
-    }
-    
-    /// Check if the message is older than a specified duration
-    func isOlderThan(_ duration: TimeInterval) -> Bool {
-        return age > duration
-    }
-    
-    /// Get the conversation ID if present (common pattern in messaging)
-    var conversationId: String? {
-        return properties["conversation-id"] ?? properties["conversationId"]
-    }
-    
-    /// Get the correlation ID if present
-    var correlationId: String? {
-        return properties["correlation-id"] ?? properties["correlationId"]
-    }
+extension Message {
+
+  /// Get a property value from the message
+  public func property(for key: String) -> String? {
+    return properties[key]
+  }
+
+  /// Check if the message has a specific property
+  public func hasProperty(_ key: String) -> Bool {
+    return properties[key] != nil
+  }
+
+  /// Get the age of the message (time since publication)
+  public var age: TimeInterval {
+    return Date().timeIntervalSince(publishTime)
+  }
+
+  /// Check if the message is older than a specified duration
+  public func isOlderThan(_ duration: TimeInterval) -> Bool {
+    return age > duration
+  }
+
+  /// Get the conversation ID if present (common pattern in messaging)
+  public var conversationId: String? {
+    return properties["conversation-id"] ?? properties["conversationId"]
+  }
+
+  /// Get the correlation ID if present
+  public var correlationId: String? {
+    return properties["correlation-id"] ?? properties["correlationId"]
+  }
 }
 
 // MARK: - MessageMetadata Builder Extensions
 
-public extension MessageMetadata {
-    
-    /// Set conversation ID
-    mutating func withConversationId(_ conversationId: String) -> MessageMetadata {
-        properties["conversation-id"] = conversationId
-        return self
+extension MessageMetadata {
+
+  /// Set conversation ID
+  public mutating func withConversationId(_ conversationId: String) -> MessageMetadata {
+    properties["conversation-id"] = conversationId
+    return self
+  }
+
+  /// Set correlation ID
+  public mutating func withCorrelationId(_ correlationId: String) -> MessageMetadata {
+    properties["correlation-id"] = correlationId
+    return self
+  }
+
+  /// Set TTL (time to live) in seconds
+  public mutating func withTTL(_ seconds: TimeInterval) -> MessageMetadata {
+    deliverAfter = seconds
+    return self
+  }
+
+  /// Add multiple properties to existing ones
+  public mutating func addProperties(_ newProperties: [String: String]) -> MessageMetadata {
+    for (key, value) in newProperties {
+      properties[key] = value
     }
-    
-    /// Set correlation ID
-    mutating func withCorrelationId(_ correlationId: String) -> MessageMetadata {
-        properties["correlation-id"] = correlationId
-        return self
-    }
-    
-    /// Set TTL (time to live) in seconds
-    mutating func withTTL(_ seconds: TimeInterval) -> MessageMetadata {
-        deliverAfter = seconds
-        return self
-    }
-    
-    /// Add multiple properties to existing ones
-    mutating func addProperties(_ newProperties: [String: String]) -> MessageMetadata {
-        for (key, value) in newProperties {
-            properties[key] = value
-        }
-        return self
-    }
-    
-    /// Set delivery delay
-    mutating func withDeliveryDelay(_ delay: TimeInterval) -> MessageMetadata {
-        deliverAfter = delay
-        return self
-    }
+    return self
+  }
+
+  /// Set delivery delay
+  public mutating func withDeliveryDelay(_ delay: TimeInterval) -> MessageMetadata {
+    deliverAfter = delay
+    return self
+  }
 }
 
 // MARK: - MessageId Extensions
 
-public extension MessageId {
-    
-    /// Check if this is a special marker ID
-    var isSpecial: Bool {
-        return self == .earliest || self == .latest
-    }
-    
-    /// Create a string representation suitable for persistence
-    var persistenceString: String {
-        return description
-    }
-    
-    /// Create from a persistence string
-    static func fromPersistenceString(_ string: String) -> MessageId? {
-        return MessageId.parse(string)
-    }
+extension MessageId {
+
+  /// Check if this is a special marker ID
+  public var isSpecial: Bool {
+    return self == .earliest || self == .latest
+  }
+
+  /// Create a string representation suitable for persistence
+  public var persistenceString: String {
+    return description
+  }
+
+  /// Create from a persistence string
+  public static func fromPersistenceString(_ string: String) -> MessageId? {
+    return MessageId.parse(string)
+  }
 }
 
 // MARK: - Message Filtering
 
-public extension Sequence {
-    
-    /// Filter messages by key
-    func withKey<T>(_ key: String) -> [Message<T>] where Element == Message<T> {
-        return filter { $0.key == key }
-    }
-    
-    /// Filter messages by property
-    func withProperty<T>(_ propertyKey: String, value: String) -> [Message<T>] where Element == Message<T> {
-        return filter { $0.properties[propertyKey] == value }
-    }
-    
-    /// Filter messages published after a date
-    func publishedAfter<T>(_ date: Date) -> [Message<T>] where Element == Message<T> {
-        return filter { $0.publishTime > date }
-    }
-    
-    /// Filter messages published before a date
-    func publishedBefore<T>(_ date: Date) -> [Message<T>] where Element == Message<T> {
-        return filter { $0.publishTime < date }
-    }
-    
-    /// Group messages by key
-    func groupedByKey<T>() -> [String?: [Message<T>]] where Element == Message<T> {
-        return Dictionary(grouping: self) { $0.key }
-    }
-    
-    /// Sort messages by publish time (oldest first)
-    func sortedByPublishTime<T>() -> [Message<T>] where Element == Message<T> {
-        return sorted { $0.publishTime < $1.publishTime }
-    }
+extension Sequence {
+
+  /// Filter messages by key
+  public func withKey<T>(_ key: String) -> [Message<T>] where Element == Message<T> {
+    return filter { $0.key == key }
+  }
+
+  /// Filter messages by property
+  public func withProperty<T>(_ propertyKey: String, value: String) -> [Message<T>]
+  where Element == Message<T> {
+    return filter { $0.properties[propertyKey] == value }
+  }
+
+  /// Filter messages published after a date
+  public func publishedAfter<T>(_ date: Date) -> [Message<T>] where Element == Message<T> {
+    return filter { $0.publishTime > date }
+  }
+
+  /// Filter messages published before a date
+  public func publishedBefore<T>(_ date: Date) -> [Message<T>] where Element == Message<T> {
+    return filter { $0.publishTime < date }
+  }
+
+  /// Group messages by key
+  public func groupedByKey<T>() -> [String?: [Message<T>]] where Element == Message<T> {
+    return Dictionary(grouping: self) { $0.key }
+  }
+
+  /// Sort messages by publish time (oldest first)
+  public func sortedByPublishTime<T>() -> [Message<T>] where Element == Message<T> {
+    return sorted { $0.publishTime < $1.publishTime }
+  }
 }

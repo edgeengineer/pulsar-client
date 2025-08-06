@@ -16,9 +16,9 @@ import Foundation
 
 /// A protocol for seeking to a specific message ID or time.
 public protocol Seekable: Sendable {
-    /// Seek to a specific message ID.
-    func seek(to messageId: MessageId) async throws
-    
-    /// Seek to a specific time.
-    func seek(to timestamp: UInt64) async throws
+  /// Seek to a specific message ID.
+  func seek(to messageId: MessageId) async throws
+
+  /// Seek to a specific time.
+  func seek(to timestamp: UInt64) async throws
 }
