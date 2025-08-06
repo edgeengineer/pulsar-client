@@ -331,12 +331,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   public func dispose() async {
     updateState(.closing)
 
-    // Cancel tasks
+    // IMPORTANT: Cancel pending operations FIRST before cancelling tasks
+    // This ensures any operations waiting to enqueue will fail immediately
+    await sendQueue.cancelAll()
+
+    // Then cancel tasks
     sendTask?.cancel()
     dispatcherTask?.cancel()
-
-    // Cancel all pending operations
-    await sendQueue.cancelAll()
 
     // Send close producer command
     let closeCommand = await connection.commandBuilder.closeProducer(producerId: id)
