@@ -50,12 +50,20 @@ extension Connection {
       logger.debug("Waiting for response to request ID: \(requestId)")
       for try await command in responseContinuation.stream {
         logger.debug("Received command: \(command.type) for request ID: \(requestId)")
+        
+        // Check if this is an error response from the broker
+        if command.type == .error {
+          let brokerError = command.error
+          logger.error("Broker rejected request \(requestId) with error: \(brokerError.message)")
+          throw PulsarClientError.protocolError("Broker error: \(brokerError.message)")
+        }
+        
         if let response = try? Response(from: command) {
           logger.debug("Successfully parsed response for request ID: \(requestId)")
           return response
         }
-        logger.warning("Failed to parse response as \(Response.self) for request ID: \(requestId)")
-        throw PulsarClientError.protocolError("Unexpected response type")
+        logger.warning("Failed to parse response as \(Response.self) for request ID: \(requestId), received: \(command.type)")
+        throw PulsarClientError.protocolError("Unexpected response type: \(command.type), expected: \(Response.self)")
       }
       logger.error("No response received for request ID: \(requestId)")
       throw PulsarClientError.protocolError("No response received")
