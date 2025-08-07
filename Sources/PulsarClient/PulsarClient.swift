@@ -88,7 +88,8 @@ public final class PulsarClient: PulsarClientProtocol {
       eventLoopGroup: eventLoopGroup,
       logger: configuration.logger,
       authentication: configuration.authentication,
-      encryptionPolicy: configuration.encryptionPolicy
+      encryptionPolicy: configuration.encryptionPolicy,
+      authRefreshInterval: configuration.authRefreshInterval
     )
 
     self.implementation = Implementation(
@@ -363,6 +364,7 @@ public final class PulsarClientBuilder {
   internal var authentication: Authentication?
   internal var encryptionPolicy: EncryptionPolicy = .preferUnencrypted
   internal var operationTimeout: TimeInterval = 30.0
+  internal var authRefreshInterval: TimeInterval = 30.0
 
   /// Initialize a new PulsarClientBuilder
   public init() {}
@@ -407,6 +409,14 @@ public final class PulsarClientBuilder {
     return self
   }
 
+  /// Set the authentication refresh interval
+  /// - Parameter interval: The interval (in seconds) between authentication refresh attempts
+  @discardableResult
+  public func withAuthRefreshInterval(_ interval: TimeInterval) -> PulsarClientBuilder {
+    self.authRefreshInterval = interval
+    return self
+  }
+
   /// Build the PulsarClient
   /// - Returns: A new PulsarClient instance
   public func build() -> PulsarClient {
@@ -429,7 +439,8 @@ public final class PulsarClientBuilder {
       enableTransaction: false,
       statsInterval: 60.0,
       logger: logger,
-      eventLoopGroup: nil
+      eventLoopGroup: nil,
+      authRefreshInterval: authRefreshInterval
     )
 
     return PulsarClient(configuration: configuration)
@@ -453,6 +464,7 @@ struct ClientConfiguration {
   let statsInterval: TimeInterval
   let logger: Logger
   let eventLoopGroup: EventLoopGroup?
+  let authRefreshInterval: TimeInterval
 }
 
 /// Client statistics

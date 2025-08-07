@@ -20,26 +20,17 @@ extension Connection {
       throw PulsarClientError.protocolError("Command missing request ID")
     }
 
-    logger.debug(
-      "Sending request",
-      metadata: [
-        "requestId": "\(requestId)",
-        "commandType": "\(frame.command.type)",
-      ])
+    logger.info("Sending request with ID: \(requestId), type: \(frame.command.type)")
 
     // Create continuation for response
     let responseContinuation = AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.makeStream()
 
     // Register the response handler BEFORE sending (critical for preventing race conditions)
     pendingRequests[requestId] = responseContinuation.continuation
-    logger.debug(
-      "Registered response handler",
-      metadata: [
-        "requestId": "\(requestId)"
-      ])
+    logger.info("Registered response handler for request ID: \(requestId)")
 
     defer {
-      logger.debug("Cleaning up request ID: \(requestId)")
+      logger.info("Cleaning up request ID: \(requestId)")
       pendingRequests.removeValue(forKey: requestId)
       responseContinuation.continuation.finish()
     }
@@ -47,7 +38,7 @@ extension Connection {
     do {
       // Send the frame after handler is safely registered
       try await sendFrame(frame)
-      logger.debug("Frame sent for request ID: \(requestId)")
+      logger.info("Frame sent for request ID: \(requestId)")
     } catch {
       // If send fails, clean up immediately and rethrow
       logger.error("Failed to send frame for request ID: \(requestId): \(error)")
@@ -56,32 +47,14 @@ extension Connection {
 
     // Wait for response with timeout
     let response = try await withTimeout(seconds: 30) { [logger] in
-      logger.debug(
-        "Waiting for response",
-        metadata: [
-          "requestId": "\(requestId)"
-        ])
+      logger.info("Waiting for response to request ID: \(requestId)")
       for try await command in responseContinuation.stream {
-        logger.debug(
-          "Processing response",
-          metadata: [
-            "requestId": "\(requestId)",
-            "commandType": "\(command.type)",
-          ])
+        logger.info("Received command: \(command.type) for request ID: \(requestId)")
         if let response = try? Response(from: command) {
-          logger.debug(
-            "Successfully parsed response",
-            metadata: [
-              "requestId": "\(requestId)"
-            ])
+          logger.info("Successfully parsed response for request ID: \(requestId)")
           return response
         }
-        logger.warning(
-          "Failed to parse response",
-          metadata: [
-            "requestId": "\(requestId)",
-            "expectedType": "\(Response.self)",
-          ])
+        logger.warning("Failed to parse response as \(Response.self) for request ID: \(requestId)")
         throw PulsarClientError.protocolError("Unexpected response type")
       }
       logger.error("No response received for request ID: \(requestId)")
@@ -113,12 +86,7 @@ extension Connection {
     if let requestId = getResponseRequestId(from: command),
       let continuation = pendingRequests.removeValue(forKey: requestId)
     {
-      logger.debug(
-        "Found matching request",
-        metadata: [
-          "requestId": "\(requestId)",
-          "commandType": "\(command.type)",
-        ])
+      logger.info("Found matching request for ID: \(requestId), command type: \(command.type)")
       continuation.yield(command)
       continuation.finish()
       return
@@ -127,7 +95,7 @@ extension Connection {
     // Handle server-initiated commands
     switch command.type {
     case .connected:
-      logger.debug("Received CONNECTED command")
+      logger.info("Received CONNECTED command")
     // This will be handled by the background processing task
     // Since this extension is for Connection actor, we can't directly access the continuation here
 
@@ -140,7 +108,7 @@ extension Connection {
       handleMessage(command.message, frame: frame)
 
     case .sendReceipt:
-      logger.debug(
+      logger.info(
         "Handling SEND_RECEIPT - producerID: \(command.sendReceipt.producerID), sequenceID: \(command.sendReceipt.sequenceID)"
       )
       handleSendReceipt(command.sendReceipt)
@@ -156,6 +124,10 @@ extension Connection {
     case .closeConsumer:
       logger.debug("Handling CLOSE_CONSUMER")
       handleCloseConsumer(command.closeConsumer)
+
+    case .authChallenge:
+      logger.info("Handling AUTH_CHALLENGE")
+      handleAuthChallenge(command.authChallenge)
 
     case .error:
       logger.error("Handling ERROR: \(command.error)")
@@ -193,8 +165,6 @@ extension Connection {
       return command.getLastMessageID.requestID
     case .getSchema:
       return command.getSchema.requestID
-    case .closeConsumer:
-      return command.closeConsumer.requestID
     default:
       return nil
     }
@@ -242,12 +212,12 @@ extension Connection {
   }
 
   private func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
-    logger.debug(
+    logger.info(
       "Received SendReceipt - producerID: \(receipt.producerID), sequenceID: \(receipt.sequenceID)")
     Task {
       // Forward to the producer channel
       if let producerChannel = await channelManager?.getProducer(id: receipt.producerID) {
-        logger.debug(
+        logger.info(
           "Found producer channel \(receipt.producerID), forwarding receipt for sequence \(receipt.sequenceID)"
         )
         await producerChannel.handleSendReceipt(receipt)
@@ -286,6 +256,39 @@ extension Connection {
           $0.error = error
         })
       continuation.finish()
+    }
+  }
+
+  private func handleAuthChallenge(_ challenge: Pulsar_Proto_CommandAuthChallenge) {
+    Task {
+      do {
+        guard let auth = authentication else {
+          logger.error("Received auth challenge but no authentication configured")
+          await self.close()
+          return
+        }
+
+        logger.info("Responding to authentication challenge")
+
+        // Get response data from authentication provider
+        let responseData = try await auth.handleAuthenticationChallenge(challenge)
+
+        // Create auth data
+        var authData = Pulsar_Proto_AuthData()
+        authData.authMethodName = auth.authenticationMethodName
+        authData.authData = responseData
+
+        // Send auth response
+        let authResponse = commandBuilder.authResponse(response: authData)
+        let frame = PulsarFrame(command: authResponse)
+
+        try await sendFrame(frame)
+        logger.info("Sent authentication response")
+
+      } catch {
+        logger.error("Failed to handle auth challenge: \(error)")
+        await self.close()
+      }
     }
   }
 }
@@ -436,7 +439,7 @@ extension Connection {
 
     // Check connection state first
     let currentState = state
-    logger.debug("Connection state before lookup: \(currentState)")
+    logger.info("Connection state before lookup: \(currentState)")
 
     guard currentState == .connected else {
       logger.error("Cannot perform lookup: connection not in connected state: \(currentState)")
@@ -446,13 +449,13 @@ extension Connection {
     let command = commandBuilder.lookup(topic: topic)
     let frame = PulsarFrame(command: command)
 
-    logger.debug(
+    logger.info(
       "Sending lookup command for topic: \(topic) with request ID: \(command.lookupTopic.requestID)"
     )
 
     let response = try await sendRequest(frame, responseType: LookupResponse.self)
 
-    logger.debug("Received lookup response for topic: \(topic)")
+    logger.info("Received lookup response for topic: \(topic)")
     return response
   }
 
@@ -570,7 +573,7 @@ extension Connection {
       // Re-establish all channels
       await self.channelManager?.reconnectAll()
 
-      self.logger.debug("Connection reconnection completed successfully")
+      self.logger.info("Connection reconnection completed successfully")
     }
   }
 
@@ -603,11 +606,11 @@ extension Connection {
 
       case .reconnecting:
         // Wait for reconnection to complete
-        try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
 
       default:
         // Wait before next check
-        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+        try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5 seconds
       }
     }
   }
@@ -670,7 +673,7 @@ extension Connection {
       updateState(.faulted(error))
 
       // Wait before next attempt
-      try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+      try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5 seconds
     }
   }
 

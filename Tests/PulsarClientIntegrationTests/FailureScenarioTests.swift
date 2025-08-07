@@ -32,16 +32,12 @@ class FailureScenarioTests {
   @Test("Connection Failure Recovery")
   func testConnectionFailure() async throws {
     // This test requires Toxiproxy to be running
-    let toxiproxyURL =
-      ProcessInfo.processInfo.environment["TOXIPROXY_URL"] ?? "http://localhost:8474"
-    let toxiproxyClient = ToxiproxyClient(baseURL: toxiproxyURL)
+    let toxiproxyClient = ToxiproxyClient(baseURL: "http://localhost:8474")
     let proxy = try await toxiproxyClient.getProxy(name: "pulsar")
 
     let topic = try await testCase.createTopic()
-    let toxiproxyServiceURL =
-      ProcessInfo.processInfo.environment["TOXIPROXY_SERVICE_URL"] ?? "pulsar://localhost:16650"
     let client = PulsarClientBuilder()
-      .withServiceUrl(toxiproxyServiceURL)  // Toxiproxy port
+      .withServiceUrl("pulsar://localhost:16650")  // Toxiproxy port
       .withOperationTimeout(1.0)  // Shorter timeout for testing
       .build()
 

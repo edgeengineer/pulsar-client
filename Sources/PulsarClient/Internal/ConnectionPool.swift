@@ -11,6 +11,7 @@ actor ConnectionPool {
   internal let serviceUrl: String
   internal let authentication: Authentication?
   internal let encryptionPolicy: EncryptionPolicy
+  internal let authRefreshInterval: TimeInterval
 
   // Handle to health monitoring task
   internal var healthMonitoringTask: Task<Void, Never>?
@@ -18,7 +19,8 @@ actor ConnectionPool {
   init(
     serviceUrl: String, eventLoopGroup: EventLoopGroup? = nil,
     logger: Logger = Logger(label: "ConnectionPool"), authentication: Authentication? = nil,
-    encryptionPolicy: EncryptionPolicy = .preferUnencrypted
+    encryptionPolicy: EncryptionPolicy = .preferUnencrypted,
+    authRefreshInterval: TimeInterval = 30.0
   ) {
     self.serviceUrl = serviceUrl
     self.eventLoopGroup =
@@ -26,6 +28,7 @@ actor ConnectionPool {
     self.logger = logger
     self.authentication = authentication
     self.encryptionPolicy = encryptionPolicy
+    self.authRefreshInterval = authRefreshInterval
   }
 
   /// Get or create a connection for the given broker URL
@@ -49,7 +52,7 @@ actor ConnectionPool {
     let url = try PulsarURL(string: brokerUrl)
     let connection = Connection(
       url: url, eventLoopGroup: eventLoopGroup, logger: logger, authentication: authentication,
-      encryptionPolicy: encryptionPolicy)
+      encryptionPolicy: encryptionPolicy, authRefreshInterval: authRefreshInterval)
     connections[brokerUrl] = connection
 
     do {

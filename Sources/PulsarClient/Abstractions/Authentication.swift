@@ -7,6 +7,38 @@ public protocol Authentication: Sendable {
 
   /// Get the authentication data
   func getAuthenticationData() async throws -> Data
+
+  /// Handle authentication challenge from the broker
+  /// - Parameter challenge: The challenge data from the broker
+  /// - Returns: The response data for the challenge
+  func handleAuthenticationChallenge(_ challenge: Pulsar_Proto_CommandAuthChallenge) async throws
+    -> Data
+
+  /// Check if authentication data needs refresh
+  /// - Returns: true if the authentication data should be refreshed
+  func needsRefresh() async -> Bool
+}
+
+/// Authentication context for challenge/response scenarios
+public enum AuthenticationContext: Sendable {
+  case initial
+  case challenge(Pulsar_Proto_CommandAuthChallenge)
+  case refresh
+}
+
+/// Default implementations for Authentication protocol
+extension Authentication {
+  public func handleAuthenticationChallenge(_ challenge: Pulsar_Proto_CommandAuthChallenge)
+    async throws -> Data
+  {
+    // Default implementation just returns fresh auth data
+    return try await getAuthenticationData()
+  }
+
+  public func needsRefresh() async -> Bool {
+    // Default implementation doesn't require refresh
+    return false
+  }
 }
 
 /// Token-based authentication implementation

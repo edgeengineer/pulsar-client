@@ -1,6 +1,7 @@
 import Foundation
 import NIOCore
 import SwiftProtobuf
+import NIOCore
 
 /// Pulsar wire protocol constants
 public enum PulsarProtocol {
@@ -139,7 +140,7 @@ public struct PulsarFrameEncoder {
 
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
   private func calculateCRC32C(data: Data) -> UInt32 {
-    return CRC32C.checksum(data)
+    return CyclicRedundancyCheck.crc32c(bytes: data)
   }
 }
 
@@ -226,7 +227,7 @@ public struct PulsarFrameDecoder {
 
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
   private func calculateCRC32C(data: Data) -> UInt32 {
-    return CRC32C.checksum(data)
+    return CyclicRedundancyCheck.crc32c(bytes: data)
   }
 }
 
@@ -352,7 +353,7 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
       producer.schema = protoSchema
     }
 
-    if let initialSequenceId = initialSequenceId {
+    if initialSequenceId != nil {
       // Note: initialSequenceID might be named differently in the proto
       // producer.initialSequenceID = initialSequenceId
     }
@@ -542,6 +543,23 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
     close.requestID = nextRequestId()
 
     command.closeProducer = close
+    return command
+  }
+
+  /// Create AUTH_RESPONSE command
+  public func authResponse(
+    clientVersion: String = "PulsarClient-Swift/1.0.0",
+    response: Pulsar_Proto_AuthData
+  ) -> Pulsar_Proto_BaseCommand {
+    var command = Pulsar_Proto_BaseCommand()
+    command.type = .authResponse
+
+    var authResponse = Pulsar_Proto_CommandAuthResponse()
+    authResponse.clientVersion = clientVersion
+    authResponse.response = response
+    authResponse.protocolVersion = PulsarProtocol.protocolVersion
+
+    command.authResponse = authResponse
     return command
   }
 

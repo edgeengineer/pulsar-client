@@ -49,8 +49,9 @@ actor Connection: PulsarConnection {
   private let eventLoopGroup: EventLoopGroup
   private var channel: NIOCore.Channel?
   internal var commandBuilder = PulsarCommandBuilder()
-  private let authentication: Authentication?
+  internal let authentication: Authentication?
   private let encryptionPolicy: EncryptionPolicy
+  private let authRefreshInterval: TimeInterval
 
   private var _state: ConnectionState = .disconnected
   private let stateStream: AsyncStream<ConnectionState>
@@ -63,6 +64,7 @@ actor Connection: PulsarConnection {
   private var backgroundProcessingTask: Task<Void, Never>?
   internal var healthMonitoringTask: Task<Void, Never>?
   private var frameProcessingStarted = false
+  private var authRefreshTask: Task<Void, Never>?
 
   // Statistics tracking
   internal var connectedAt: Date?
@@ -76,13 +78,15 @@ actor Connection: PulsarConnection {
 
   init(
     url: PulsarURL, eventLoopGroup: EventLoopGroup, logger: Logger,
-    authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted
+    authentication: Authentication? = nil, encryptionPolicy: EncryptionPolicy = .preferUnencrypted,
+    authRefreshInterval: TimeInterval = 30.0
   ) {
     self.url = url
     self.eventLoopGroup = eventLoopGroup
     self.logger = logger
     self.authentication = authentication
     self.encryptionPolicy = encryptionPolicy
+    self.authRefreshInterval = authRefreshInterval
     self.channelManager = ChannelManager(logger: logger)
 
     (self.stateStream, self.stateContinuation) = AsyncStream<ConnectionState>.makeStream()
@@ -119,7 +123,7 @@ actor Connection: PulsarConnection {
     }
 
     updateState(.connecting)
-    logger.debug("State updated to connecting")
+    logger.info("State updated to connecting")
 
     do {
       let frameHandler = PulsarFrameHandler(connection: self)
@@ -146,10 +150,10 @@ actor Connection: PulsarConnection {
           self.setupChannelPipeline(channel: channel, frameHandler: frameHandler)
         }
 
-      logger.debug("Establishing TCP connection")
+      logger.info("Establishing TCP connection")
       let channel = try await bootstrap.connect(host: url.host, port: url.port).get()
       self.channel = channel
-      logger.debug("TCP connection established")
+      logger.info("TCP connection established")
 
       // Start background processing BEFORE sending CONNECT command (like C#)
       startBackgroundProcessing()
@@ -172,20 +176,18 @@ actor Connection: PulsarConnection {
       }
       let frame = PulsarFrame(command: connectCommand)
 
-      // Debug: Log connection details
-      logger.debug(
-        "Sending CONNECT command",
-        metadata: [
-          "type": "\(connectCommand.type)",
-          "hasConnect": "\(connectCommand.hasConnect)",
-          "protocolVersion": "\(connectCommand.connect.protocolVersion)",
-          "clientVersion": "\(connectCommand.connect.clientVersion)",
-        ])
+      // Debug: Log frame details
+      logger.info(
+        "CONNECT command details: type=\(connectCommand.type), hasConnect=\(connectCommand.hasConnect)"
+      )
+      logger.info("Protocol version: \(connectCommand.connect.protocolVersion)")
+      logger.info("Client version: \(connectCommand.connect.clientVersion)")
 
+      logger.info("Sending CONNECT command")
       try await sendFrame(frame)
 
       // Wait for CONNECTED response (handled synchronously)
-      logger.debug("Waiting for CONNECTED response")
+      logger.info("Waiting for CONNECTED response")
       do {
         try await withThrowingTaskGroup(of: Void.self) { group in
           group.addTask {
@@ -204,11 +206,11 @@ actor Connection: PulsarConnection {
           try await group.next()!
           group.cancelAll()
         }
-        logger.debug("CONNECTED response received successfully")
+        logger.info("CONNECTED response received successfully")
         logger.info("Successfully connected to Pulsar at \(url.host):\(url.port)")
 
-        // Start reconnection monitoring after successful connection
-        startReconnectionMonitoring()
+        // Start authentication refresh task if needed
+        startAuthenticationRefreshTask()
       } catch {
         logger.error("Connection failed: \(error)")
         throw error
@@ -265,26 +267,15 @@ actor Connection: PulsarConnection {
     // Close any background tasks
     backgroundProcessingTask?.cancel()
     backgroundProcessingTask = nil
+
+    authRefreshTask?.cancel()
+    authRefreshTask = nil
+
     healthMonitoringTask?.cancel()
     healthMonitoringTask = nil
 
     updateState(.closed)
     logger.info("Connection closed")
-  }
-
-  /// Handle channel becoming inactive (connection dropped)
-  func handleChannelInactive() async {
-    let currentState = _state
-
-    // Only handle if we were connected
-    guard currentState == .connected || currentState == .reconnecting else {
-      return
-    }
-
-    logger.warning("Connection lost, transitioning to disconnected state")
-    updateState(.disconnected)
-
-    // The health monitoring task will handle reconnection attempts
   }
 
   // MARK: - Internal Methods
@@ -343,20 +334,20 @@ actor Connection: PulsarConnection {
 
   /// Start background processing (equivalent to C# Setup method)
   private func startBackgroundProcessing() {
-    logger.debug("Creating background processing task")
+    logger.info("Creating background processing task")
     backgroundProcessingTask = Task.detached { [weak self] in
       guard let self = self else { return }
-      self.logger.debug("Background processing task started")
+      self.logger.info("Background processing task started")
       await self.markFrameProcessingStarted()
       await self.processIncomingFramesContinuously()
     }
-    logger.debug("Background processing task created")
+    logger.info("Background processing task created")
   }
 
   /// Mark that frame processing has started
   private func markFrameProcessingStarted() {
     frameProcessingStarted = true
-    logger.debug("Frame processing marked as started")
+    logger.info("Frame processing marked as started")
   }
 
   /// Wait for frame processing to start
@@ -367,7 +358,7 @@ actor Connection: PulsarConnection {
       attempts += 1
     }
     if frameProcessingStarted {
-      logger.debug("Frame processing confirmed started after \(attempts) attempts")
+      logger.info("Frame processing confirmed started after \(attempts) attempts")
     } else {
       logger.warning("Frame processing start timeout after \(attempts) attempts")
     }
@@ -385,17 +376,17 @@ actor Connection: PulsarConnection {
       return
     }
 
-    logger.debug("Starting continuous frame processing")
+    logger.info("Starting continuous frame processing")
 
     var frameCount = 0
     for await frame in frameHandler.incomingFrames {
       frameCount += 1
-      logger.debug("Received frame #\(frameCount): type=\(frame.command.type)")
+      logger.info("Received frame #\(frameCount): type=\(frame.command.type)")
 
       // Log more details for specific frame types
       switch frame.command.type {
       case .sendReceipt:
-        logger.debug(
+        logger.info(
           "SendReceipt details - producerID: \(frame.command.sendReceipt.producerID), sequenceID: \(frame.command.sendReceipt.sequenceID)"
         )
       case .sendError:
@@ -423,12 +414,63 @@ actor Connection: PulsarConnection {
 
       // Exit if connection is no longer active
       if _state == .closed || _state == .closing {
-        logger.debug("Stopping frame processing - connection closed")
+        logger.info("Stopping frame processing - connection closed")
         break
       }
     }
 
-    logger.debug("Frame processing loop ended after \(frameCount) frames")
+    logger.info("Frame processing loop ended after \(frameCount) frames")
+  }
+
+  // MARK: - Authentication Refresh
+
+  /// Start authentication refresh task if authentication supports it
+  private func startAuthenticationRefreshTask() {
+    guard let auth = authentication else { return }
+
+    authRefreshTask = Task { [weak self] in
+      guard let self = self else { return }
+
+      logger.info("Starting authentication refresh task")
+
+      while !Task.isCancelled {
+        let currentState = await self._state
+        guard currentState == .connected else { break }
+        do {
+          // Check if authentication needs refresh
+          if await auth.needsRefresh() {
+            logger.info("Authentication needs refresh")
+
+            // Get fresh authentication data
+            let authData = try await auth.getAuthenticationData()
+
+            // Create auth data
+            var authDataProto = Pulsar_Proto_AuthData()
+            authDataProto.authMethodName = auth.authenticationMethodName
+            authDataProto.authData = authData
+
+            // Send auth response (broker will validate and update)
+            let authResponse = await commandBuilder.authResponse(response: authDataProto)
+            let frame = PulsarFrame(command: authResponse)
+
+            try await sendFrame(frame)
+            logger.info("Sent refreshed authentication data")
+          }
+
+          // Wait before next check
+          try await Task.sleep(nanoseconds: UInt64(authRefreshInterval * 1_000_000_000))
+
+        } catch {
+          if !Task.isCancelled {
+            logger.error("Authentication refresh failed: \(error)")
+            // Continue trying unless task is cancelled
+            try? await Task.sleep(nanoseconds: 5_000_000_000)  // Wait 5 seconds before retry
+          }
+        }
+      }
+
+      logger.info("Authentication refresh task ended")
+    }
   }
 
 }
@@ -451,7 +493,7 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
       var bufferCopy = buffer
       if let bytes = bufferCopy.readBytes(length: min(readableBytes, 50)) {
         let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-        logger.debug("Raw incoming data (\(readableBytes) bytes): \(hexString)...")
+        logger.info("Raw incoming data (\(readableBytes) bytes): \(hexString)...")
       }
     }
 
@@ -467,7 +509,7 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
       var bufferCopy = buffer
       if let bytes = bufferCopy.readBytes(length: min(readableBytes, 100)) {
         let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-        logger.debug("Raw outgoing data (\(readableBytes) bytes): \(hexString)...")
+        logger.info("Raw outgoing data (\(readableBytes) bytes): \(hexString)...")
       }
     }
 
@@ -485,7 +527,7 @@ final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
   private let logger = Logger(label: "PulsarFrameByteDecoder")
 
   func decode(context: ChannelHandlerContext, buffer: inout ByteBuffer) throws -> DecodingState {
-    logger.debug("Decode called with \(buffer.readableBytes) readable bytes")
+    logger.info("Decode called with \(buffer.readableBytes) readable bytes")
 
     guard buffer.readableBytes >= 4 else {
       return .needMoreData
@@ -601,8 +643,6 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
     if let connection = connection {
       Task {
         connection.logger.warning("PulsarFrameHandler channel became inactive")
-        // Trigger connection state update to handle disconnection
-        await connection.handleChannelInactive()
       }
     }
     frameStreamContinuation.finish()
@@ -611,7 +651,7 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
   func channelActive(context: ChannelHandlerContext) {
     if let connection = connection {
       Task {
-        connection.logger.debug("PulsarFrameHandler channel is active")
+        connection.logger.info("PulsarFrameHandler channel is active")
       }
     }
   }

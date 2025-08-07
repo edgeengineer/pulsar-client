@@ -25,9 +25,6 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   private let sendQueue: SendQueue<T>
   private var dispatcherTask: Task<Void, Never>?
 
-  // Serial executor to maintain message order
-  private let sendOrderQueue = DispatchQueue(label: "sendOrder", qos: .userInitiated)
-
   // Fault tolerance components
   private let retryExecutor: RetryExecutor
   private let stateManager: ProducerStateManager
@@ -210,90 +207,50 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   }
 
   public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
-    return try await sendWithRetry(message, metadata: metadata, retryCount: 0)
-  }
+    guard _state == .connected else {
+      throw PulsarClientError.producerBusy("Producer not connected")
+    }
 
-  private func sendWithRetry(_ message: T, metadata: MessageMetadata, retryCount: Int) async throws
-    -> MessageId
-  {
-    let maxRetries = 3
+    // Assign sequence ID if not set
+    var metadata = metadata
+    if metadata.sequenceId == nil {
+      metadata.sequenceId = nextSequenceId()
+    }
 
-    do {
-      // Check if we need to attempt reconnection
-      if _state != .connected {
-        if retryCount < maxRetries {
+    // Create the send operation with a continuation (like C# TaskCompletionSource)
+    return try await withCheckedThrowingContinuation { continuation in
+      Task {
+        do {
+          // Encode message
+          let payload = try self.schema.encode(message)
+
+          // Create metadata with guaranteed sequence ID and compression type
+          let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
+            producerName: self.producerName,
+            sequenceId: metadata.sequenceId!,
+            publishTime: Date(),
+            properties: metadata.properties,
+            compressionType: self.configuration.compressionType
+          )
+
           logger.info(
-            "Producer not connected, attempting recovery (attempt \(retryCount + 1)/\(maxRetries))")
-          await attemptRecovery()
+            "Sending message with producer name \(self.producerName), sequence ID \(metadata.sequenceId!), publish time \(Date())"
+          )
 
-          // Wait a bit before retry
-          try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+          // Create send operation
+          let sendOp = SendOperation<T>(
+            metadata: protoMetadata,
+            payload: payload,
+            continuation: continuation
+          )
 
-          if _state == .connected {
-            return try await sendWithRetry(message, metadata: metadata, retryCount: retryCount + 1)
-          }
+          // Enqueue the operation
+          try await self.sendQueue.enqueue(sendOp)
+        } catch {
+          continuation.resume(throwing: error)
         }
-        throw PulsarClientError.producerBusy(
-          "Producer not connected after \(maxRetries) retry attempts")
-      }
-
-      // Assign sequence ID synchronously to guarantee ordering
-      var metadata = metadata
-      if metadata.sequenceId == nil {
-        metadata.sequenceId = nextSequenceId()
-      }
-
-      // Capture the sequence ID for async work
-      let capturedSequenceId = metadata.sequenceId!
-
-      logger.debug(
-        "Sending message",
-        metadata: [
-          "producerName": "\(producerName)",
-          "sequenceId": "\(capturedSequenceId)",
-          "publishTime": "\(Date())",
-        ])
-
-      // Do encoding synchronously to ensure ordering
-      let payload = try schema.encode(message)
-
-      // Create metadata (this is async but lightweight)
-      let protoMetadata = await connection.commandBuilder.createMessageMetadata(
-        producerName: producerName,
-        sequenceId: capturedSequenceId,
-        publishTime: Date(),
-        properties: metadata.properties,
-        compressionType: configuration.compressionType
-      )
-
-      // Create and enqueue the send operation
-      // The key insight: call a private actor method to serialize enqueue operations
-      return try await enqueueAndWait(metadata: protoMetadata, payload: payload)
-
-    } catch {
-      // Check if this is a connection-related error and we can retry
-      if retryCount < maxRetries && isConnectionError(error) {
-        logger.warning("Send failed with connection error, retrying: \(error)")
-        return try await sendWithRetry(message, metadata: metadata, retryCount: retryCount + 1)
-      }
-      throw error
-    }
-  }
-
-  private func isConnectionError(_ error: Error) -> Bool {
-    if let pulsarError = error as? PulsarClientError {
-      switch pulsarError {
-      case .connectionFailed, .protocolError, .timeout:
-        return true
-      default:
-        return false
       }
     }
-    // Check for common networking errors
-    let errorString = error.localizedDescription.lowercased()
-    return errorString.contains("connection") || errorString.contains("channel")
-      || errorString.contains("closed") || errorString.contains("network")
-      || errorString.contains("i/o")
   }
 
   public func sendBatch(_ messages: [T]) async throws -> [MessageId] {
@@ -331,13 +288,12 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   public func dispose() async {
     updateState(.closing)
 
-    // IMPORTANT: Cancel pending operations FIRST before cancelling tasks
-    // This ensures any operations waiting to enqueue will fail immediately
-    await sendQueue.cancelAll()
-
-    // Then cancel tasks
+    // Cancel tasks
     sendTask?.cancel()
     dispatcherTask?.cancel()
+
+    // Cancel all pending operations
+    await sendQueue.cancelAll()
 
     // Send close producer command
     let closeCommand = await connection.commandBuilder.closeProducer(producerId: id)
@@ -367,44 +323,6 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     return id
   }
 
-  /// Serialize enqueue operations to maintain strict FIFO ordering
-  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
-    -> MessageId
-  {
-    // Use structured concurrency pattern from PR #6
-    // This ensures proper ordering without nested Task creation
-    return try await withCheckedThrowingContinuation { continuation in
-      let sendOp = SendOperation<T>(
-        metadata: metadata,
-        payload: payload,
-        continuation: continuation
-      )
-      
-      // Use sendOrderQueue to maintain ordering but avoid nested Task
-      sendOrderQueue.async { [weak self] in
-        guard let self = self else {
-          continuation.resume(throwing: PulsarClientError.producerBusy("Producer deallocated"))
-          return
-        }
-        
-        // Create a single Task for the async operation with proper cancellation
-        Task {
-          do {
-            try await self.sendQueue.enqueue(sendOp)
-            // The continuation will be resumed by the dispatcher when receipt arrives
-          } catch {
-            // Handle both enqueue errors and cancellation
-            if Task.isCancelled {
-              continuation.resume(throwing: CancellationError())
-            } else {
-              continuation.resume(throwing: error)
-            }
-          }
-        }
-      }
-    }
-  }
-
   private func updateState(_ newState: ClientState) {
     _state = newState
     stateContinuation.yield(newState)
@@ -417,43 +335,31 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
   private func runMessageDispatcher() async {
-    logger.debug(
-      "Starting message dispatcher",
-      metadata: [
-        "producer": "\(producerName)"
-      ])
+    logger.info("Starting message dispatcher for producer \(producerName)")
 
     while !Task.isCancelled && _state == .connected {
-      // Try to get an operation with a timeout to avoid hanging
-      let sendOp: SendOperation<T>
       do {
-        sendOp = try await sendQueue.dequeue()
-      } catch {
-        // If dequeue was cancelled or failed, check if we should continue
-        if Task.isCancelled || _state != .connected {
-          break
+        // Get next operation from queue
+        let sendOp = try await sendQueue.dequeue()
+
+        // Get the producer channel
+        let channelManager = await connection.getChannelManager()
+        guard let producerChannel = await channelManager.getProducer(id: id) else {
+          sendOp.fail(with: PulsarClientError.producerBusy("Producer channel not found"))
+          continue
         }
-        // Add a small delay to prevent tight error loops
-        try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-        continue
-      }
 
-      // Get the producer channel
-      let channelManager = await connection.getChannelManager()
-      guard let producerChannel = await channelManager.getProducer(id: id) else {
-        sendOp.fail(with: PulsarClientError.producerBusy("Producer channel not found"))
-        continue
-      }
+        // Process the send operation
+        await processSendOperation(sendOp, channel: producerChannel)
 
-      // Process the send operation (this is async but doesn't throw)
-      await processSendOperation(sendOp, channel: producerChannel)
+      } catch {
+        if !Task.isCancelled {
+          logger.error("Message dispatcher error: \(error)")
+        }
+      }
     }
 
-    logger.debug(
-      "Message dispatcher stopped",
-      metadata: [
-        "producer": "\(producerName)"
-      ])
+    logger.info("Message dispatcher stopped for producer \(producerName)")
   }
 
   /// Process a single send operation (like C# channel.Send)

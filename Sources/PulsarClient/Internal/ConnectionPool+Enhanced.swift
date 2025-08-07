@@ -19,29 +19,25 @@ extension ConnectionPool {
 
   /// Enhanced lookup with retries and caching
   func lookup(topic: String) async throws -> BrokerLookupResult {
-    logger.debug(
-      "Starting topic lookup",
-      metadata: [
-        "topic": "\(topic)",
-        "serviceUrl": "\(serviceUrl)",
-      ])
+    logger.info("Starting lookup for topic: \(topic)")
 
     // Try to get a connection to the service URL
+    logger.info("Getting connection for service URL: \(serviceUrl)")
     let connection = try await getConnection(for: serviceUrl)
-    logger.debug("Got connection for service URL")
+    logger.info("Got connection for service URL")
 
     var attempts = 0
     let maxAttempts = 3
 
     while attempts < maxAttempts {
       do {
-        logger.debug("Lookup attempt \(attempts + 1) for topic: \(topic)")
+        logger.info("Lookup attempt \(attempts + 1) for topic: \(topic)")
         let lookupResponse = try await connection.lookup(topic: topic)
 
         switch lookupResponse.response {
         case .connect(let brokerUrl, let brokerUrlTls):
           // Direct connection to broker
-          logger.debug("Lookup successful - connect to \(brokerUrl)")
+          logger.info("Lookup successful - connect to \(brokerUrl)")
           return BrokerLookupResult(
             brokerUrl: brokerUrl,
             brokerUrlTls: brokerUrlTls,
@@ -50,16 +46,11 @@ extension ConnectionPool {
 
         case .redirect(let brokerUrl, _):
           // Need to connect to a different broker for lookup
-          logger.debug(
-            "Topic lookup redirected",
-            metadata: [
-              "topic": "\(topic)",
-              "redirectUrl": "\(brokerUrl)",
-            ])
+          logger.info("Redirected to \(brokerUrl) for topic \(topic)")
 
           // If we should proxy through service URL, use the original connection
           if lookupResponse.proxyThroughServiceUrl {
-            logger.debug("Using proxy through service URL")
+            logger.info("Using proxy through service URL")
             return BrokerLookupResult(
               brokerUrl: serviceUrl,
               brokerUrlTls: nil,
@@ -68,7 +59,7 @@ extension ConnectionPool {
           }
 
           // Otherwise, try lookup on the redirected broker
-          logger.debug("Following redirect to \(brokerUrl)")
+          logger.info("Following redirect to \(brokerUrl)")
           let redirectConnection = try await getConnection(for: brokerUrl)
           return try await redirectConnection.lookup(topic: topic).toBrokerLookupResult()
 
@@ -84,13 +75,7 @@ extension ConnectionPool {
           throw error
         }
 
-        logger.warning(
-          "Lookup attempt failed",
-          metadata: [
-            "attempt": "\(attempts)",
-            "topic": "\(topic)",
-            "error": "\(error)",
-          ])
+        logger.warning("Lookup attempt \(attempts) failed for topic \(topic): \(error)")
 
         // Wait before retry with exponential backoff
         let backoffSeconds = Double(attempts) * 2.0
