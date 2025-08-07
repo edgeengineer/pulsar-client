@@ -24,7 +24,7 @@ extension Connection {
       "Sending request",
       metadata: [
         "requestId": "\(requestId)",
-        "commandType": "\(frame.command.type)"
+        "commandType": "\(frame.command.type)",
       ]
     )
 
@@ -62,7 +62,7 @@ extension Connection {
           "Received command",
           metadata: ["type": "\(command.type)", "requestId": "\(requestId)"]
         )
-        
+
         // Check if this is an error response from the broker
         if command.type == .error {
           let brokerError = command.error
@@ -72,7 +72,7 @@ extension Connection {
           )
           throw PulsarClientError.protocolError("Broker error: \(brokerError.message)")
         }
-        
+
         if let response = try? Response(from: command) {
           logger.debug("Successfully parsed response", metadata: ["requestId": "\(requestId)"])
           return response
@@ -82,10 +82,11 @@ extension Connection {
           metadata: [
             "expectedType": "\(Response.self)",
             "receivedType": "\(command.type)",
-            "requestId": "\(requestId)"
+            "requestId": "\(requestId)",
           ]
         )
-        throw PulsarClientError.protocolError("Unexpected response type: \(command.type), expected: \(Response.self)")
+        throw PulsarClientError.protocolError(
+          "Unexpected response type: \(command.type), expected: \(Response.self)")
       }
       logger.error("No response received", metadata: ["requestId": "\(requestId)"])
       throw PulsarClientError.protocolError("No response received")
@@ -145,7 +146,7 @@ extension Connection {
         "Handling SEND_RECEIPT",
         metadata: [
           "producerId": "\(command.sendReceipt.producerID)",
-          "sequenceId": "\(command.sendReceipt.sequenceID)"
+          "sequenceId": "\(command.sendReceipt.sequenceID)",
         ]
       )
       handleSendReceipt(command.sendReceipt)
@@ -202,6 +203,14 @@ extension Connection {
       return command.getLastMessageID.requestID
     case .getSchema:
       return command.getSchema.requestID
+    case .closeConsumer:
+      return command.closeConsumer.requestID
+    case .closeProducer:
+      return command.closeProducer.requestID
+    case .unsubscribe:
+      return command.unsubscribe.requestID
+    case .seek:
+      return command.seek.requestID
     default:
       return nil
     }
@@ -223,6 +232,12 @@ extension Connection {
       return command.getLastMessageIDResponse.requestID
     case .getSchemaResponse:
       return command.getSchemaResponse.requestID
+    case .closeProducer:
+      // Broker may send Success for close; map via Success handler
+      return nil
+    case .closeConsumer:
+      // Broker may send Success for close; map via Success handler
+      return nil
     default:
       return nil
     }

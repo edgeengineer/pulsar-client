@@ -17,7 +17,7 @@ actor SendQueue<T: Sendable> {
     guard !isCancelled else {
       throw PulsarClientError.producerBusy("Producer closing - queue cancelled")
     }
-    
+
     guard queue.count < maxSize else {
       throw PulsarClientError.producerQueueFull
     }
@@ -78,7 +78,7 @@ actor SendQueue<T: Sendable> {
   func cancelAll() {
     // Set cancelled flag to prevent new enqueues
     isCancelled = true
-    
+
     // Cancel all queued operations
     for operation in queue {
       operation.fail(with: PulsarClientError.producerBusy("Producer closing"))

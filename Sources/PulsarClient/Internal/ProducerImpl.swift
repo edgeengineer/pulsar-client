@@ -24,7 +24,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   // Queue-based sending (like C# implementation)
   private let sendQueue: SendQueue<T>
   private var dispatcherTask: Task<Void, Never>?
-  
+
   // Serial dispatch queue for maintaining FIFO message ordering
   private let sendOrderQueue = DispatchQueue(label: "sendOrder", qos: .userInitiated)
 
@@ -270,10 +270,10 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   public func dispose() async {
     updateState(.closing)
-    
+
     // IMPORTANT: Cancel pending operations FIRST to prevent hanging
     await sendQueue.cancelAll()
-    
+
     // Then cancel tasks
     sendTask?.cancel()
     dispatcherTask?.cancel()
@@ -299,23 +299,25 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   }
 
   // MARK: - Private Methods
-  
+
   /// Enqueue operation and wait for completion with FIFO ordering
-  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws -> MessageId {
+  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
+    -> MessageId
+  {
     return try await withCheckedThrowingContinuation { continuation in
       let sendOp = SendOperation<T>(
         metadata: metadata,
         payload: payload,
         continuation: continuation
       )
-      
+
       // Use serial dispatch queue to maintain FIFO ordering
       sendOrderQueue.async { [weak self] in
         guard let self = self else {
           continuation.resume(throwing: PulsarClientError.producerBusy("Producer deallocated"))
           return
         }
-        
+
         Task {
           do {
             try await self.sendQueue.enqueue(sendOp)

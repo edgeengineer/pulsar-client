@@ -169,6 +169,60 @@ actor IntegrationTestCase {
   }
 }
 
+// MARK: - Admin helpers
+extension IntegrationTestCase {
+  /// Waits until the given subscription has no connected consumers (or the subscription is gone).
+  /// Uses the Admin `stats` endpoint to poll broker state.
+  func waitForNoConsumers(
+    topic: String,
+    subscription: String,
+    timeout: TimeInterval = 10,
+    pollInterval: TimeInterval = 0.2
+  ) async {
+    let topicName =
+      topic
+      .replacingOccurrences(of: "persistent://", with: "")
+      .replacingOccurrences(of: "public/default/", with: "")
+
+    guard
+      let url = URL(
+        string: "\(Self.adminURL)/admin/v2/persistent/public/default/\(topicName)/stats"
+      )
+    else {
+      return
+    }
+
+    struct TopicStats: Decodable { let subscriptions: [String: SubscriptionStats]? }
+    struct SubscriptionStats: Decodable { let consumers: [ConsumerStats]? }
+    struct ConsumerStats: Decodable {}
+
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      var request = URLRequest(url: url)
+      if let token = ProcessInfo.processInfo.environment["PULSAR_AUTH_TOKEN"] {
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      }
+
+      do {
+        let (data, _) = try await urlSession.data(for: request)
+        if let stats = try? JSONDecoder().decode(TopicStats.self, from: data) {
+          if let sub = stats.subscriptions?[subscription] {
+            if (sub.consumers ?? []).isEmpty { return }
+          } else {
+            // Subscription no longer present
+            return
+          }
+        }
+      } catch {
+        // ignore transient errors during teardown
+      }
+
+      // Wait and retry
+      try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+    }
+  }
+}
+
 enum IntegrationTestError: Error {
   case topicCreationFailed(String)
   case clientNotInitialized

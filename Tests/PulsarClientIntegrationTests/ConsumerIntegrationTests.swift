@@ -91,6 +91,7 @@ class ConsumerIntegrationTests {
       _ =
         builder
         .subscriptionName("ack-sub")
+        .subscriptionType(.exclusive)
         .initialPosition(.earliest)
     }
 
@@ -103,16 +104,30 @@ class ConsumerIntegrationTests {
     let firstMessage = try await consumer.receive()
     #expect(firstMessage.value == "Message 0")
 
-    // Close and reopen consumer
+    // Close and reopen consumer (wait until broker fully detaches first consumer)
     await consumer.dispose()
-    try await Task.sleep(nanoseconds: 1_000_000_000)
+    await testCase.waitForNoConsumers(topic: topic, subscription: "ack-sub", timeout: 20)
 
-    let consumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
-      builder in
-      _ =
-        builder
-        .subscriptionName("ack-sub")
-    }
+    // Try to re-open the same exclusive subscription with retries to avoid broker-side teardown races
+    let consumer2: any ConsumerProtocol<String> = try await {
+      var lastError: Error?
+      for i in 0..<60 {
+        do {
+          return try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
+            builder in
+            _ =
+              builder
+              .subscriptionName("ack-sub")
+              .subscriptionType(.exclusive)
+          }
+        } catch {
+          lastError = error
+          if i == 59 { break }
+          try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+      }
+      throw lastError ?? PulsarClientError.unknownError("failed to reopen consumer")
+    }()
 
     // Should receive unacknowledged message again
     let redeliveredMessage = try await consumer2.receive()

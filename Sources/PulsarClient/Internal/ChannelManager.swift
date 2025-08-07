@@ -51,7 +51,9 @@ actor ProducerChannel: PulsarChannel {
 
   /// Register a send operation (non-blocking, like C#)
   func registerSendOperation<T>(_ operation: SendOperation<T>) {
-    logger.debug("Registering send operation for sequence \(operation.sequenceId), total pending: \(pendingSends.count + 1)")
+    logger.debug(
+      "Registering send operation for sequence \(operation.sequenceId), total pending: \(pendingSends.count + 1)"
+    )
     let wrapper = AnySendOperationWrapper(operation)
     pendingSends[operation.sequenceId] = wrapper
   }
@@ -65,12 +67,16 @@ actor ProducerChannel: PulsarChannel {
         partition: receipt.messageID.hasPartition ? receipt.messageID.partition : -1,
         batchIndex: receipt.messageID.hasBatchIndex ? receipt.messageID.batchIndex : -1
       )
-      logger.debug("Completed send operation for sequence \(receipt.sequenceID), messageId: \(messageId), remaining: \(pendingSends.count)")
-      
+      logger.debug(
+        "Completed send operation for sequence \(receipt.sequenceID), messageId: \(messageId), remaining: \(pendingSends.count)"
+      )
+
       // Complete the operation
       wrapper.complete(with: messageId)
     } else {
-      logger.warning("Received send receipt for unknown sequence ID \(receipt.sequenceID), pending: \(pendingSends.keys.sorted())")
+      logger.warning(
+        "Received send receipt for unknown sequence ID \(receipt.sequenceID), pending: \(pendingSends.keys.sorted())"
+      )
     }
   }
 
