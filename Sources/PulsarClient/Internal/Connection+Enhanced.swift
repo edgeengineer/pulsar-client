@@ -20,17 +20,23 @@ extension Connection {
       throw PulsarClientError.protocolError("Command missing request ID")
     }
 
-    logger.debug("Sending request with ID: \(requestId), type: \(frame.command.type)")
+    logger.debug(
+      "Sending request",
+      metadata: [
+        "requestId": "\(requestId)",
+        "commandType": "\(frame.command.type)"
+      ]
+    )
 
     // Create continuation for response
     let responseContinuation = AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.makeStream()
 
     // Register the response handler BEFORE sending (critical for preventing race conditions)
     pendingRequests[requestId] = responseContinuation.continuation
-    logger.debug("Registered response handler for request ID: \(requestId)")
+    logger.debug("Registered response handler", metadata: ["requestId": "\(requestId)"])
 
     defer {
-      logger.debug("Cleaning up request ID: \(requestId)")
+      logger.debug("Cleaning up request", metadata: ["requestId": "\(requestId)"])
       pendingRequests.removeValue(forKey: requestId)
       responseContinuation.continuation.finish()
     }
@@ -38,34 +44,50 @@ extension Connection {
     do {
       // Send the frame after handler is safely registered
       try await sendFrame(frame)
-      logger.debug("Frame sent for request ID: \(requestId)")
+      logger.debug("Frame sent", metadata: ["requestId": "\(requestId)"])
     } catch {
       // If send fails, clean up immediately and rethrow
-      logger.error("Failed to send frame for request ID: \(requestId): \(error)")
+      logger.error(
+        "Failed to send frame",
+        metadata: ["requestId": "\(requestId)", "error": "\(error)"]
+      )
       throw error
     }
 
     // Wait for response with timeout
     let response = try await withTimeout(seconds: 30) { [logger] in
-      logger.debug("Waiting for response to request ID: \(requestId)")
+      logger.debug("Waiting for response", metadata: ["requestId": "\(requestId)"])
       for try await command in responseContinuation.stream {
-        logger.debug("Received command: \(command.type) for request ID: \(requestId)")
+        logger.debug(
+          "Received command",
+          metadata: ["type": "\(command.type)", "requestId": "\(requestId)"]
+        )
         
         // Check if this is an error response from the broker
         if command.type == .error {
           let brokerError = command.error
-          logger.error("Broker rejected request \(requestId) with error: \(brokerError.message)")
+          logger.error(
+            "Broker rejected request",
+            metadata: ["requestId": "\(requestId)", "error": "\(brokerError.message)"]
+          )
           throw PulsarClientError.protocolError("Broker error: \(brokerError.message)")
         }
         
         if let response = try? Response(from: command) {
-          logger.debug("Successfully parsed response for request ID: \(requestId)")
+          logger.debug("Successfully parsed response", metadata: ["requestId": "\(requestId)"])
           return response
         }
-        logger.warning("Failed to parse response as \(Response.self) for request ID: \(requestId), received: \(command.type)")
+        logger.warning(
+          "Failed to parse response",
+          metadata: [
+            "expectedType": "\(Response.self)",
+            "receivedType": "\(command.type)",
+            "requestId": "\(requestId)"
+          ]
+        )
         throw PulsarClientError.protocolError("Unexpected response type: \(command.type), expected: \(Response.self)")
       }
-      logger.error("No response received for request ID: \(requestId)")
+      logger.error("No response received", metadata: ["requestId": "\(requestId)"])
       throw PulsarClientError.protocolError("No response received")
     }
 
@@ -88,13 +110,16 @@ extension Connection {
 
   /// Handle incoming commands (enhanced version)
   private func handleIncomingCommand(_ command: Pulsar_Proto_BaseCommand, frame: PulsarFrame) {
-    logger.debug("Processing incoming command: \(command.type)")
+    logger.debug("Processing incoming command", metadata: ["type": "\(command.type)"])
 
     // First check if this is a response to a pending request
     if let requestId = getResponseRequestId(from: command),
       let continuation = pendingRequests.removeValue(forKey: requestId)
     {
-      logger.debug("Found matching request for ID: \(requestId), command type: \(command.type)")
+      logger.debug(
+        "Found matching request",
+        metadata: ["requestId": "\(requestId)", "type": "\(command.type)"]
+      )
       continuation.yield(command)
       continuation.finish()
       return
@@ -117,7 +142,11 @@ extension Connection {
 
     case .sendReceipt:
       logger.info(
-        "Handling SEND_RECEIPT - producerID: \(command.sendReceipt.producerID), sequenceID: \(command.sendReceipt.sequenceID)"
+        "Handling SEND_RECEIPT",
+        metadata: [
+          "producerId": "\(command.sendReceipt.producerID)",
+          "sequenceId": "\(command.sendReceipt.sequenceID)"
+        ]
       )
       handleSendReceipt(command.sendReceipt)
 
@@ -138,7 +167,7 @@ extension Connection {
       handleAuthChallenge(command.authChallenge)
 
     case .error:
-      logger.error("Handling ERROR: \(command.error)")
+      logger.error("Handling ERROR", metadata: ["error": "\(command.error)"])
       handleError(command.error)
 
     case .lookupResponse:
@@ -153,7 +182,7 @@ extension Connection {
       logger.warning("Received unmatched SUCCESS - this indicates a bug in request correlation")
 
     default:
-      logger.warning("Unhandled command type: \(command.type)")
+      logger.warning("Unhandled command type", metadata: ["type": "\(command.type)"])
     }
   }
 
