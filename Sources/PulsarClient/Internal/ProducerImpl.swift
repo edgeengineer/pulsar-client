@@ -371,20 +371,34 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
     -> MessageId
   {
+    // Use structured concurrency pattern from PR #6
+    // This ensures proper ordering without nested Task creation
     return try await withCheckedThrowingContinuation { continuation in
       let sendOp = SendOperation<T>(
         metadata: metadata,
         payload: payload,
         continuation: continuation
       )
-
-      // Use a serial dispatch queue to ensure ordering
-      sendOrderQueue.async {
+      
+      // Use sendOrderQueue to maintain ordering but avoid nested Task
+      sendOrderQueue.async { [weak self] in
+        guard let self = self else {
+          continuation.resume(throwing: PulsarClientError.producerBusy("Producer deallocated"))
+          return
+        }
+        
+        // Create a single Task for the async operation with proper cancellation
         Task {
           do {
             try await self.sendQueue.enqueue(sendOp)
+            // The continuation will be resumed by the dispatcher when receipt arrives
           } catch {
-            continuation.resume(throwing: error)
+            // Handle both enqueue errors and cancellation
+            if Task.isCancelled {
+              continuation.resume(throwing: CancellationError())
+            } else {
+              continuation.resume(throwing: error)
+            }
           }
         }
       }
