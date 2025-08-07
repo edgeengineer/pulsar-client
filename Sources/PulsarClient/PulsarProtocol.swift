@@ -1,7 +1,7 @@
+import CyclicRedundancyCheck
 import Foundation
 import NIOCore
 import SwiftProtobuf
-import CyclicRedundancyCheck
 
 /// Pulsar wire protocol constants
 public enum PulsarProtocol {
