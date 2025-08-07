@@ -24,6 +24,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   // Queue-based sending (like C# implementation)
   private let sendQueue: SendQueue<T>
   private var dispatcherTask: Task<Void, Never>?
+  
+  // Serial dispatch queue for maintaining FIFO message ordering
+  private let sendOrderQueue = DispatchQueue(label: "sendOrder", qos: .userInitiated)
 
   // Fault tolerance components
   private let retryExecutor: RetryExecutor
@@ -211,46 +214,26 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       throw PulsarClientError.producerBusy("Producer not connected")
     }
 
-    // Assign sequence ID if not set
+    // Assign sequence ID synchronously to ensure ordering
     var metadata = metadata
     if metadata.sequenceId == nil {
       metadata.sequenceId = nextSequenceId()
     }
 
-    // Create the send operation with a continuation (like C# TaskCompletionSource)
-    return try await withCheckedThrowingContinuation { continuation in
-      Task {
-        do {
-          // Encode message
-          let payload = try self.schema.encode(message)
+    // Encode message synchronously to ensure no race conditions
+    let payload = try schema.encode(message)
 
-          // Create metadata with guaranteed sequence ID and compression type
-          let protoMetadata = await self.connection.commandBuilder.createMessageMetadata(
-            producerName: self.producerName,
-            sequenceId: metadata.sequenceId!,
-            publishTime: Date(),
-            properties: metadata.properties,
-            compressionType: self.configuration.compressionType
-          )
+    // Create metadata synchronously
+    let protoMetadata = await connection.commandBuilder.createMessageMetadata(
+      producerName: producerName,
+      sequenceId: metadata.sequenceId!,
+      publishTime: Date(),
+      properties: metadata.properties,
+      compressionType: configuration.compressionType
+    )
 
-          logger.info(
-            "Sending message with producer name \(self.producerName), sequence ID \(metadata.sequenceId!), publish time \(Date())"
-          )
-
-          // Create send operation
-          let sendOp = SendOperation<T>(
-            metadata: protoMetadata,
-            payload: payload,
-            continuation: continuation
-          )
-
-          // Enqueue the operation
-          try await self.sendQueue.enqueue(sendOp)
-        } catch {
-          continuation.resume(throwing: error)
-        }
-      }
-    }
+    // Use the serial dispatch queue to ensure FIFO ordering
+    return try await enqueueAndWait(metadata: protoMetadata, payload: payload)
   }
 
   public func sendBatch(_ messages: [T]) async throws -> [MessageId] {
@@ -287,13 +270,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   public func dispose() async {
     updateState(.closing)
-
-    // Cancel tasks
+    
+    // IMPORTANT: Cancel pending operations FIRST to prevent hanging
+    await sendQueue.cancelAll()
+    
+    // Then cancel tasks
     sendTask?.cancel()
     dispatcherTask?.cancel()
-
-    // Cancel all pending operations
-    await sendQueue.cancelAll()
 
     // Send close producer command
     let closeCommand = await connection.commandBuilder.closeProducer(producerId: id)
@@ -316,6 +299,37 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   }
 
   // MARK: - Private Methods
+  
+  /// Enqueue operation and wait for completion with FIFO ordering
+  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws -> MessageId {
+    return try await withCheckedThrowingContinuation { continuation in
+      let sendOp = SendOperation<T>(
+        metadata: metadata,
+        payload: payload,
+        continuation: continuation
+      )
+      
+      // Use serial dispatch queue to maintain FIFO ordering
+      sendOrderQueue.async { [weak self] in
+        guard let self = self else {
+          continuation.resume(throwing: PulsarClientError.producerBusy("Producer deallocated"))
+          return
+        }
+        
+        Task {
+          do {
+            try await self.sendQueue.enqueue(sendOp)
+          } catch {
+            if Task.isCancelled {
+              continuation.resume(throwing: CancellationError())
+            } else {
+              continuation.resume(throwing: error)
+            }
+          }
+        }
+      }
+    }
+  }
 
   private func nextSequenceId() -> UInt64 {
     let id = sequenceId

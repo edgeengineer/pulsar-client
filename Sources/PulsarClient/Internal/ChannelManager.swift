@@ -51,17 +51,13 @@ actor ProducerChannel: PulsarChannel {
 
   /// Register a send operation (non-blocking, like C#)
   func registerSendOperation<T>(_ operation: SendOperation<T>) {
-    logger.info("Registering send operation for sequence \(operation.sequenceId)")
+    logger.debug("Registering send operation for sequence \(operation.sequenceId), total pending: \(pendingSends.count + 1)")
     let wrapper = AnySendOperationWrapper(operation)
     pendingSends[operation.sequenceId] = wrapper
-    logger.info("Send operation registered. Total pending: \(pendingSends.count)")
   }
 
   /// Handle incoming send receipt
   func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
-    logger.info("ProducerChannel handling send receipt for sequence \(receipt.sequenceID)")
-    logger.info("Current pending sends: \(pendingSends.keys.sorted())")
-
     if let wrapper = pendingSends.removeValue(forKey: receipt.sequenceID) {
       let messageId = MessageId(
         ledgerId: receipt.messageID.ledgerID,
@@ -69,16 +65,12 @@ actor ProducerChannel: PulsarChannel {
         partition: receipt.messageID.hasPartition ? receipt.messageID.partition : -1,
         batchIndex: receipt.messageID.hasBatchIndex ? receipt.messageID.batchIndex : -1
       )
-      logger.info(
-        "Found send operation for sequence \(receipt.sequenceID), completing with message ID: \(messageId)"
-      )
-
+      logger.debug("Completed send operation for sequence \(receipt.sequenceID), messageId: \(messageId), remaining: \(pendingSends.count)")
+      
       // Complete the operation
       wrapper.complete(with: messageId)
     } else {
-      logger.warning(
-        "Received send receipt for unknown sequence ID \(receipt.sequenceID). Pending sequences: \(pendingSends.keys.sorted())"
-      )
+      logger.warning("Received send receipt for unknown sequence ID \(receipt.sequenceID), pending: \(pendingSends.keys.sorted())")
     }
   }
 

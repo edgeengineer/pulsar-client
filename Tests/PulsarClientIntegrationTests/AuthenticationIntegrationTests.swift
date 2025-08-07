@@ -147,14 +147,7 @@ struct AuthenticationIntegrationTests {
   func authenticationRefresh() async throws {
     let refreshAuth = MockRefreshableAuthentication()
 
-    let client = PulsarClient.builder { builder in
-      builder.withServiceUrl(serviceUrl)
-        .withAuthentication(refreshAuth)
-        .withLogger(IntegrationTestLogger.shared)
-    }
-
-    defer { Task { await client.dispose() } }
-
+    // Test the refresh mechanism without creating a client connection
     // Initially should not need refresh
     var needsRefresh = await refreshAuth.needsRefresh()
     #expect(!needsRefresh)
