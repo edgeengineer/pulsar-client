@@ -76,10 +76,16 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y wget
         
-        # Download and install Swift 6.1
-        wget https://download.swift.org/swift-6.1-release/ubuntu2204/swift-6.1-RELEASE/swift-6.1-RELEASE-ubuntu22.04.tar.gz
-        tar xzf swift-6.1-RELEASE-ubuntu22.04.tar.gz
-        sudo mv swift-6.1-RELEASE-ubuntu22.04 /opt/swift
+        # Check if Swift is already installed
+        if [ ! -f "/opt/swift/usr/bin/swift" ]; then
+          # Download and install Swift 6.1
+          wget https://download.swift.org/swift-6.1-release/ubuntu2204/swift-6.1-RELEASE/swift-6.1-RELEASE-ubuntu22.04.tar.gz
+          tar xzf swift-6.1-RELEASE-ubuntu22.04.tar.gz
+          sudo rm -rf /opt/swift
+          sudo mv swift-6.1-RELEASE-ubuntu22.04 /opt/swift
+        else
+          echo "Swift already installed at /opt/swift"
+        fi
         echo "/opt/swift/usr/bin" >> $GITHUB_PATH
         
         # Install runtime dependencies

@@ -232,7 +232,7 @@ private actor MockRefreshableAuthentication: Authentication {
     return "auth-data-v\(refreshCount)".data(using: .utf8)!
   }
 
-  func needsRefresh() -> Bool {
+  func needsRefresh() async -> Bool {
     return shouldRefresh
   }
 

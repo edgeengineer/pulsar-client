@@ -111,6 +111,17 @@ actor ConsumerChannel: PulsarChannel {
   internal var messageHandler:
     ((Pulsar_Proto_CommandMessage, Data, Pulsar_Proto_MessageMetadata) async -> Void)?
 
+  // Per-consumer inbound FIFO dispatcher state
+  private typealias InboundMessage = (
+    msg: Pulsar_Proto_CommandMessage,
+    payload: Data,
+    metadata: Pulsar_Proto_MessageMetadata
+  )
+  private var inboundBuffer: [InboundMessage] = []
+  private var inboundWaiters: [CheckedContinuation<InboundMessage?, Never>] = []
+  private var dispatchTask: Task<Void, Never>?
+  private var inboundClosed = false
+
   // Store subscription configuration for reconnection
   private var subscriptionType: SubscriptionType = .exclusive
   private var initialPosition: SubscriptionInitialPosition = .latest
@@ -134,6 +145,7 @@ actor ConsumerChannel: PulsarChannel {
 
   func activate() {
     state = .active
+    startDispatcherIfNeeded()
   }
 
   func updateState(_ newState: ChannelState) {
@@ -146,6 +158,7 @@ actor ConsumerChannel: PulsarChannel {
       Void
   ) {
     self.messageHandler = handler
+    startDispatcherIfNeeded()
   }
 
   func close() async {
@@ -154,6 +167,13 @@ actor ConsumerChannel: PulsarChannel {
 
     // Clear message handler
     messageHandler = nil
+
+    // Close inbound queue and cancel dispatcher
+    inboundClosed = true
+    for waiter in inboundWaiters { waiter.resume(returning: nil) }
+    inboundWaiters.removeAll()
+    dispatchTask?.cancel()
+    dispatchTask = nil
 
     state = .closed
   }
@@ -174,6 +194,51 @@ actor ConsumerChannel: PulsarChannel {
     type: SubscriptionType, initialPosition: SubscriptionInitialPosition, schemaInfo: SchemaInfo?
   ) {
     return (subscriptionType, initialPosition, schemaInfo)
+  }
+
+  func enqueueInbound(
+    message: Pulsar_Proto_CommandMessage,
+    payload: Data,
+    metadata: Pulsar_Proto_MessageMetadata
+  ) async {
+    guard state == .active else { return }
+    let item: InboundMessage = (message, payload, metadata)
+    if let waiter = inboundWaiters.first {
+      inboundWaiters.removeFirst()
+      waiter.resume(returning: item)
+    } else {
+      inboundBuffer.append(item)
+    }
+    startDispatcherIfNeeded()
+  }
+
+  private func nextInbound() async -> InboundMessage? {
+    if inboundClosed { return nil }
+    if let item = inboundBuffer.first {
+      inboundBuffer.removeFirst()
+      return item
+    }
+    if inboundClosed { return nil }
+    return await withCheckedContinuation { (c: CheckedContinuation<InboundMessage?, Never>) in
+      inboundWaiters.append(c)
+    }
+  }
+
+  private func startDispatcherIfNeeded() {
+    guard dispatchTask == nil, state == .active else { return }
+    guard messageHandler != nil else { return }
+    dispatchTask = Task { [weak self] in
+      while let self = self, !Task.isCancelled {
+        guard let item = await self.nextInbound() else { break }
+        await self.dispatchItem(item)
+      }
+    }
+  }
+
+  private func dispatchItem(_ item: InboundMessage) async {
+    if let handler = self.messageHandler {
+      await handler(item.msg, item.payload, item.metadata)
+    }
   }
 }
 

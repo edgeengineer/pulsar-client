@@ -14,8 +14,8 @@ extension ChannelManager {
       return
     }
 
-    // Store the message in the consumer channel for the ConsumerImpl to retrieve
-    await consumerChannel.handleMessage(message, payload: payload, metadata: metadata)
+    // Enqueue into per-consumer FIFO dispatcher
+    await consumerChannel.enqueueInbound(message: message, payload: payload, metadata: metadata)
   }
 
   /// Handle active consumer change

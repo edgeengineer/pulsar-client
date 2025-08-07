@@ -105,6 +105,7 @@ class ConsumerIntegrationTests {
 
     // Close and reopen consumer
     await consumer.dispose()
+    try await Task.sleep(nanoseconds: 1_000_000_000)
 
     let consumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
       builder in
