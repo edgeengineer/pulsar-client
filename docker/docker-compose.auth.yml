@@ -16,19 +16,19 @@ services:
         bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject admin > /pulsar/conf/admin.token
         bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
-        
-        # Atomically create auth config snippet
-        ADMIN_TOKEN=$(cat /pulsar/conf/admin.token | xargs)
-        cat >/pulsar/conf/auth-settings.conf <<EOF
-        authenticationEnabled=true
-        authorizationEnabled=true
-        authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken
-        brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken
-        brokerClientAuthenticationParameters=token:\${ADMIN_TOKEN}
-        tokenSecretKey=file:///pulsar/conf/secret.key
-        superUserRoles=admin
-        EOF
-        
+
+        # Build auth config without heredocs (act-safe)
+        ADMIN_TOKEN=$(tr -d "\r\n" < /pulsar/conf/admin.token)
+        {
+          echo "authenticationEnabled=true"
+          echo "authorizationEnabled=true"
+          echo "authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken"
+          echo "brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken"
+          echo "brokerClientAuthenticationParameters=token:${ADMIN_TOKEN}"
+          echo "tokenSecretKey=file:///pulsar/conf/secret.key"
+          echo "superUserRoles=admin"
+        } > /pulsar/conf/auth-settings.conf
+
         # Append to main config and start
         cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
         bin/pulsar standalone
