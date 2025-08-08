@@ -295,7 +295,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     updateState(.closed)
-    logger.info("Producer \(producerName) closed")
+    logger.info("Producer closed", metadata: ["producerName": "\(producerName)"])
   }
 
   // MARK: - Private Methods
@@ -351,7 +351,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
   private func runMessageDispatcher() async {
-    logger.info("Starting message dispatcher for producer \(producerName)")
+    logger.info("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
 
     while !Task.isCancelled && _state == .connected {
       do {
@@ -370,12 +370,12 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
       } catch {
         if !Task.isCancelled {
-          logger.error("Message dispatcher error: \(error)")
+      logger.error("Message dispatcher error", metadata: ["error": "\(error)"])
         }
       }
     }
 
-    logger.info("Message dispatcher stopped for producer \(producerName)")
+    logger.info("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
   }
 
   /// Process a single send operation (like C# channel.Send)
@@ -424,7 +424,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // The receipt will be handled by the channel when it arrives
 
     } catch {
-      logger.error("Failed to send message: \(error)")
+      logger.error("Failed to send message", metadata: ["error": "\(error)"])
       sendOp.fail(with: error)
     }
   }
@@ -441,7 +441,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
       } catch {
         if !Task.isCancelled {
-          logger.warning("Batch sender error: \(error)")
+      logger.warning("Batch sender error", metadata: ["error": "\(error)"])
         }
       }
     }
@@ -606,7 +606,10 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
     case .rethrow:
       // Keep current state, might recover later
-      logger.warning("Producer \(producerName) keeping current state after error: \(error)")
+      logger.warning(
+        "Producer keeping current state after error",
+        metadata: ["producerName": "\(producerName)", "error": "\(error)"]
+      )
     }
   }
 
@@ -624,10 +627,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // Re-establish producer if needed
       // The channel manager should handle producer re-creation
       updateState(.connected)
-      logger.info("Producer \(producerName) recovered successfully")
+      logger.info("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
 
     } catch {
-      logger.error("Producer \(producerName) recovery failed: \(error)")
+      logger.error(
+        "Producer recovery failed",
+        metadata: ["producerName": "\(producerName)", "error": "\(error)"]
+      )
       updateState(.faulted(error))
     }
   }
