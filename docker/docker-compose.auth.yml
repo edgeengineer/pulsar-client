@@ -10,9 +10,11 @@ services:
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
       - PULSAR_STANDALONE_RESET=true
       - PULSAR_LOG_CONF=/pulsar/conf/log4j2.yaml
+      - PULSAR_LOG_APPENDER=Console
     command: |
       bash -lc '
         set -e
+        set -x
         # Ensure test auth materials exist (idempotent)
         if [ ! -f /pulsar/conf/secret.key ]; then
           bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
@@ -23,7 +25,15 @@ services:
         if [ ! -f /pulsar/conf/client.token ]; then
           bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         fi
-        # Let 'pulsar standalone' manage ZooKeeper/BookKeeper; avoid starting ZK separately to prevent port conflicts
+        # Try to initialize metadata (non-fatal if ZK not up yet or already initialized)
+        bin/pulsar initialize-cluster-metadata \
+          --cluster standalone \
+          --zookeeper 127.0.0.1:2181 \
+          --configuration-store 127.0.0.1:2181 \
+          --web-service-url http://localhost:8080 \
+          --broker-service-url pulsar://localhost:6650 || echo "Metadata init skipped or already done"
+
+        echo "Starting Pulsar Standalone..."
         bin/pulsar standalone --no-functions-worker
       '
     # Health probed in CI via curl with token; omit container healthcheck to avoid act race
