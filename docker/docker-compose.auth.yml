@@ -29,10 +29,18 @@ services:
           echo "tokenSecretKey=file:///pulsar/conf/secret.key"
           echo "superUserRoles=admin"
           echo "functionsWorkerEnabled=false"
+          echo "clusterName=standalone"
         } > /pulsar/conf/auth-settings.conf
 
         # Append to main config and start (disable functions worker explicitly)
         cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
+        # Initialize cluster metadata if not already initialized (idempotent)
+        bin/pulsar initialize-cluster-metadata \
+          --cluster standalone \
+          --zookeeper 127.0.0.1:2181 \
+          --configuration-store 127.0.0.1:2181 \
+          --web-service-url http://localhost:8080 \
+          --broker-service-url pulsar://localhost:6650 || true
         bin/pulsar standalone --no-functions-worker
       '
     # Health probed in CI via curl with token; omit container healthcheck to avoid act race
