@@ -10,6 +10,7 @@ services:
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
       - PULSAR_STANDALONE_RESET=true
       - PULSAR_PREFIX_functionsWorkerEnabled=false
+      - PULSAR_LOG_CONF=/pulsar/conf/log4j2.yaml
     command: |
       bash -lc '
         set -e
