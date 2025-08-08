@@ -25,22 +25,7 @@ services:
         if [ ! -f /pulsar/conf/client.token ]; then
           bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         fi
-        # One-time cluster metadata init using built-in temporary services
-        if [ ! -f /pulsar/data/initialized ]; then
-          echo "Initializing cluster metadata for the first time..."
-          bin/pulsar initialize-cluster-metadata \
-            --cluster standalone \
-            --zookeeper 127.0.0.1:2181 \
-            --configuration-store 127.0.0.1:2181 \
-            --web-service-url http://127.0.0.1:8080 \
-            --broker-service-url pulsar://127.0.0.1:6650 \
-            --initial-cluster-data-path /pulsar/data
-          touch /pulsar/data/initialized
-          echo "Initialization complete."
-        else
-          echo "Cluster already initialized. Skipping metadata setup."
-        fi
-
+        # NOTE: Skip manual cluster metadata initialization; standalone handles it
         echo "Starting Pulsar Standalone service..."
         bin/pulsar standalone --no-functions-worker
       '
