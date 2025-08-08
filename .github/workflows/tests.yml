@@ -154,8 +154,15 @@ jobs:
         SWIFT_BACKTRACE: enable
       timeout-minutes: 15  # Reduced from 20 due to parallelism
       run: |
+        set -o pipefail
         # Run all tests in parallel now that Connection Failure Recovery is fixed
-        swift test --filter PulsarClientIntegrationTests --parallel --num-workers 4
+        swift test --filter PulsarClientIntegrationTests --parallel --num-workers 4 2>&1 | tee integration-tests.log
+        status=${PIPESTATUS[0]}
+        echo "==== Swift Test Failure Summary (integration) ===="
+        grep -En "error:|Assertion failed|Expectation failed|Test Case '-.*' failed|Failing tests|timeout|fatal error|segmentation" integration-tests.log || true
+        echo "==== XCTest Summary (integration) ===="
+        grep -En "Test Suite|Test Case|Executed|passed|failed" integration-tests.log | tail -n 200 || true
+        exit $status
     
     - name: Collect logs (integration) (always)
       if: always()
@@ -207,7 +214,15 @@ jobs:
         LOG_LEVEL: debug
         SWIFT_BACKTRACE: enable
       timeout-minutes: 20
-      run: swift test --filter PulsarClientIntegrationTests
+      run: |
+        set -o pipefail
+        swift test --filter PulsarClientIntegrationTests 2>&1 | tee integration-tests-auth.log
+        status=${PIPESTATUS[0]}
+        echo "==== Swift Test Failure Summary (auth) ===="
+        grep -En "error:|Assertion failed|Expectation failed|Test Case '-.*' failed|Failing tests|timeout|fatal error|segmentation" integration-tests-auth.log || true
+        echo "==== XCTest Summary (auth) ===="
+        grep -En "Test Suite|Test Case|Executed|passed|failed" integration-tests-auth.log | tail -n 200 || true
+        exit $status
 
     - name: Collect logs (auth) (always)
       if: always()
@@ -247,7 +262,15 @@ jobs:
         LOG_LEVEL: debug
         SWIFT_BACKTRACE: enable
       timeout-minutes: 20
-      run: swift test --filter PulsarClientIntegrationTests
+      run: |
+        set -o pipefail
+        swift test --filter PulsarClientIntegrationTests 2>&1 | tee integration-tests-cluster.log
+        status=${PIPESTATUS[0]}
+        echo "==== Swift Test Failure Summary (cluster) ===="
+        grep -En "error:|Assertion failed|Expectation failed|Test Case '-.*' failed|Failing tests|timeout|fatal error|segmentation" integration-tests-cluster.log || true
+        echo "==== XCTest Summary (cluster) ===="
+        grep -En "Test Suite|Test Case|Executed|passed|failed" integration-tests-cluster.log | tail -n 200 || true
+        exit $status
 
     - name: Collect logs (cluster) (always)
       if: always()
