@@ -55,7 +55,7 @@ class SimpleMessageTest {
     // Try to receive with a reasonable timeout
     print("=== Waiting for message ===")
     do {
-      let message = try await consumer.receive()
+      let message = try await consumer.receive(timeout: 15.0)
       print("SUCCESS: Received message: '\(message.value)'")
       try await consumer.acknowledge(message)
     } catch {

@@ -23,7 +23,7 @@ class ConsumerIntegrationTests {
     semaphore.wait()
   }
 
-  @Test("Subscription Types")
+  @Test("Subscription Types", .timeLimit(.minutes(2)))
   func testSubscriptionTypes() async throws {
     let topic = try await testCase.createTopic()
     guard let client = await testCase.client else {
@@ -77,7 +77,7 @@ class ConsumerIntegrationTests {
     await sharedConsumer2.dispose()
   }
 
-  @Test("Message Acknowledgment")
+  @Test("Message Acknowledgment", .timeLimit(.minutes(3)))
   func testAcknowledgment() async throws {
     let topic = try await testCase.createTopic()
     guard let client = await testCase.client else {
@@ -101,7 +101,7 @@ class ConsumerIntegrationTests {
     }
 
     // Receive but don't acknowledge first message
-    let firstMessage = try await consumer.receive()
+    let firstMessage = try await consumer.receive(timeout: 15.0)
     #expect(firstMessage.value == "Message 0")
 
     // Close and reopen consumer (wait until broker fully detaches first consumer)
@@ -130,7 +130,7 @@ class ConsumerIntegrationTests {
     }()
 
     // Should receive unacknowledged message again
-    let redeliveredMessage = try await consumer2.receive()
+    let redeliveredMessage = try await consumer2.receive(timeout: 15.0)
     #expect(redeliveredMessage.value == "Message 0")
 
     // Acknowledge this time
