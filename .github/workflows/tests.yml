@@ -74,6 +74,16 @@ jobs:
             admin_url: http://localhost:8081
             pulsar_container: pulsar
             enable_toxiproxy: 'true'
+          # - name: cluster
+          #   swift-version: '6.1'
+          #   product: PulsarClient
+          #   auth: 'false'
+          #   cluster: 'true'
+          #   compose_file: docker/docker-compose.cluster.yml
+          #   service_url: pulsar://localhost:6650
+          #   admin_url: http://localhost:8080
+          #   pulsar_container: broker
+          #   enable_toxiproxy: 'false'
           # - name: auth
           #   swift-version: '6.1'
           #   product: PulsarClient
@@ -118,7 +128,22 @@ jobs:
           netcat-openbsd pkg-config tzdata unzip zlib1g-dev
 
     - name: Start Pulsar stack
-      run: docker compose -f ${{ matrix.compose_file }} up -d --wait
+      run: |
+        if [ "${{ matrix.cluster }}" = "true" ]; then
+          docker compose -f ${{ matrix.compose_file }} up -d zookeeper
+          echo "Waiting for ZooKeeper health..."
+          timeout 120 bash -c 'until docker inspect --format {{.State.Health.Status}} zookeeper | grep -q healthy; do sleep 2; done'
+          docker compose -f ${{ matrix.compose_file }} up -d pulsar-init
+          docker logs pulsar-init | tail -n 200 || true
+          docker compose -f ${{ matrix.compose_file }} up -d bookkeeper
+          echo "Waiting for BookKeeper health..."
+          timeout 180 bash -c 'until docker inspect --format {{.State.Health.Status}} bookkeeper | grep -q healthy; do sleep 3; done'
+          docker compose -f ${{ matrix.compose_file }} up -d broker
+          echo "Waiting for Broker health..."
+          timeout 180 bash -c 'until curl -sf ${{ matrix.admin_url }}/admin/v2/brokers/health >/dev/null; do sleep 3; done'
+        else
+          docker compose -f ${{ matrix.compose_file }} up -d --wait
+        fi
 
     - name: Fetch admin token (auth)
       id: admin
@@ -195,60 +220,5 @@ jobs:
     - name: Cleanup
       if: always()
       run: docker compose -f ${{ matrix.compose_file }} down -v
-  integration-tests-cluster:
-    name: Integration Tests with Cluster
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - swift-version: '6.1'
-            product: PulsarClient
-    steps:
-    - uses: actions/checkout@v4
-    - name: Start Pulsar Cluster
-      run: |
-        docker compose -f docker/docker-compose.cluster.yml up -d zookeeper
-        echo "Waiting for ZooKeeper health..."
-        timeout 120 bash -c 'until docker inspect --format {{.State.Health.Status}} zookeeper | grep -q healthy; do sleep 2; done'
-        docker compose -f docker/docker-compose.cluster.yml up -d pulsar-init
-        docker logs pulsar-init | tail -n 200 || true
-        docker compose -f docker/docker-compose.cluster.yml up -d bookkeeper
-        echo "Waiting for BookKeeper health..."
-        timeout 180 bash -c 'until docker inspect --format {{.State.Health.Status}} bookkeeper | grep -q healthy; do sleep 3; done'
-        docker compose -f docker/docker-compose.cluster.yml up -d broker
-        echo "Waiting for Broker health..."
-        timeout 180 bash -c 'until curl -sf http://localhost:8080/admin/v2/brokers/health >/dev/null; do sleep 3; done'
-        echo "Waiting for Pulsar Admin API to be fully ready..."
-        timeout 120 bash -c 'until curl -s -f -o /dev/null http://localhost:8080/admin/v2/brokers/health; do sleep 5; done'
-
-    - name: Smoke check broker ports (cluster)
-      run: |
-        (echo -n | nc -vz localhost 6650) || true
-        curl -sSf http://localhost:8080/admin/v2/brokers/health || true
-    
-    - name: Run Integration Tests
-      env:
-        PULSAR_SERVICE_URL: pulsar://localhost:6650
-        PULSAR_ADMIN_URL: http://localhost:8080
-        LOG_LEVEL: debug
-        SWIFT_BACKTRACE: enable
-      timeout-minutes: 20
-      run: |
-        set -o pipefail
-        swift test --filter PulsarClientIntegrationTests 2>&1 | tee integration-tests-cluster.log
-        status=${PIPESTATUS[0]}
-        echo "==== Swift Test Failure Summary (cluster) ===="
-        grep -En "error:|Assertion failed|Expectation failed|Test Case '-.*' failed|Failing tests|timeout|fatal error|segmentation" integration-tests-cluster.log || true
-        echo "==== XCTest Summary (cluster) ===="
-        grep -En "Test Suite|Test Case|Executed|passed|failed" integration-tests-cluster.log | tail -n 200 || true
-        exit $status
-
-    - name: Collect logs (cluster) (always)
-      if: always()
-      run: |
-        echo "=== Container Status ===" && docker ps -a || true
-        echo "=== Cluster Broker Logs (last 500 lines) ===" && docker logs pulsar --since 30m | tail -n 500 || true
-    
-    - name: Cleanup
-      if: always()
-      run: docker compose -f docker/docker-compose.cluster.yml down -v
+  
+  # integration-tests-cluster folded into integration-tests matrix above
