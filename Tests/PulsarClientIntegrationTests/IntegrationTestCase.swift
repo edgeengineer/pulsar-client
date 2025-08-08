@@ -30,6 +30,9 @@ actor IntegrationTestCase {
     config.timeoutIntervalForRequest = 10
     self.urlSession = URLSession(configuration: config)
 
+    // Wait for broker health to avoid CI startup races
+    await waitForBrokerHealth(timeoutSeconds: 120)
+
     // Setup client with appropriate configuration
     self._client = try await createClient()
   }
@@ -166,6 +169,77 @@ actor IntegrationTestCase {
     }
 
     _ = try? await urlSession.data(for: request)
+  }
+}
+
+// MARK: - Admin helpers
+extension IntegrationTestCase {
+  private func waitForBrokerHealth(timeoutSeconds: Int) async {
+    let admin = Self.adminURL
+    guard let url = URL(string: "\(admin)/admin/v2/brokers/health") else { return }
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    while Date() < deadline {
+      var req = URLRequest(url: url)
+      if let token = ProcessInfo.processInfo.environment["PULSAR_AUTH_TOKEN"] {
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      }
+      if let (_, resp) = try? await urlSession.data(for: req),
+        (resp as? HTTPURLResponse)?.statusCode == 200
+      {
+        return
+      }
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+    }
+  }
+  /// Waits until the given subscription has no connected consumers (or the subscription is gone).
+  /// Uses the Admin `stats` endpoint to poll broker state.
+  func waitForNoConsumers(
+    topic: String,
+    subscription: String,
+    timeout: TimeInterval = 10,
+    pollInterval: TimeInterval = 0.2
+  ) async {
+    let topicName =
+      topic
+      .replacingOccurrences(of: "persistent://", with: "")
+      .replacingOccurrences(of: "public/default/", with: "")
+
+    guard
+      let url = URL(
+        string: "\(Self.adminURL)/admin/v2/persistent/public/default/\(topicName)/stats"
+      )
+    else {
+      return
+    }
+
+    struct TopicStats: Decodable { let subscriptions: [String: SubscriptionStats]? }
+    struct SubscriptionStats: Decodable { let consumers: [ConsumerStats]? }
+    struct ConsumerStats: Decodable {}
+
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      var request = URLRequest(url: url)
+      if let token = ProcessInfo.processInfo.environment["PULSAR_AUTH_TOKEN"] {
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      }
+
+      do {
+        let (data, _) = try await urlSession.data(for: request)
+        if let stats = try? JSONDecoder().decode(TopicStats.self, from: data) {
+          if let sub = stats.subscriptions?[subscription] {
+            if (sub.consumers ?? []).isEmpty { return }
+          } else {
+            // Subscription no longer present
+            return
+          }
+        }
+      } catch {
+        // ignore transient errors during teardown
+      }
+
+      // Wait and retry
+      try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+    }
   }
 }
 

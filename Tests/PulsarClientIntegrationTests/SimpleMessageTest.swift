@@ -11,17 +11,8 @@ class SimpleMessageTest {
     self.testCase = try await IntegrationTestCase()
   }
 
-  // deinit returns before cleanup is complete, causing hanging tests
-  // so we use a semaphore to wait for the cleanup to complete
-  // replace with "isolated deinit" in Swift 6.2
-  deinit {
-    let semaphore = DispatchSemaphore(value: 0)
-    Task { [testCase] in
-      await testCase.cleanup()
-      semaphore.signal()
-    }
-    semaphore.wait()
-  }
+  // Non-blocking cleanup to avoid CI teardown deadlocks
+  deinit { Task { [testCase] in await testCase.cleanup() } }
 
   @Test("Simple Send and Receive")
   func testSimpleSendReceive() async throws {
@@ -55,7 +46,7 @@ class SimpleMessageTest {
     // Try to receive with a reasonable timeout
     print("=== Waiting for message ===")
     do {
-      let message = try await consumer.receive()
+      let message = try await consumer.receive(timeout: 15.0)
       print("SUCCESS: Received message: '\(message.value)'")
       try await consumer.acknowledge(message)
     } catch {

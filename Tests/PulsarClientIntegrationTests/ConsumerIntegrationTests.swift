@@ -11,19 +11,10 @@ class ConsumerIntegrationTests {
     self.testCase = try await IntegrationTestCase()
   }
 
-  // deinit returns before cleanup is complete, causing hanging tests
-  // so we use a semaphore to wait for the cleanup to complete
-  // replace with "isolated deinit" in Swift 6.2
-  deinit {
-    let semaphore = DispatchSemaphore(value: 0)
-    Task { [testCase] in
-      await testCase.cleanup()
-      semaphore.signal()
-    }
-    semaphore.wait()
-  }
+  // Non-blocking cleanup to avoid CI teardown deadlocks
+  deinit { Task { [testCase] in await testCase.cleanup() } }
 
-  @Test("Subscription Types")
+  @Test("Subscription Types", .timeLimit(.minutes(2)))
   func testSubscriptionTypes() async throws {
     let topic = try await testCase.createTopic()
     guard let client = await testCase.client else {
@@ -77,7 +68,7 @@ class ConsumerIntegrationTests {
     await sharedConsumer2.dispose()
   }
 
-  @Test("Message Acknowledgment")
+  @Test("Message Acknowledgment", .timeLimit(.minutes(3)))
   func testAcknowledgment() async throws {
     let topic = try await testCase.createTopic()
     guard let client = await testCase.client else {
@@ -91,6 +82,7 @@ class ConsumerIntegrationTests {
       _ =
         builder
         .subscriptionName("ack-sub")
+        .subscriptionType(.exclusive)
         .initialPosition(.earliest)
     }
 
@@ -100,21 +92,36 @@ class ConsumerIntegrationTests {
     }
 
     // Receive but don't acknowledge first message
-    let firstMessage = try await consumer.receive()
+    let firstMessage = try await consumer.receive(timeout: 15.0)
     #expect(firstMessage.value == "Message 0")
 
-    // Close and reopen consumer
+    // Close and reopen consumer (wait until broker fully detaches first consumer)
     await consumer.dispose()
+    await testCase.waitForNoConsumers(topic: topic, subscription: "ack-sub", timeout: 20)
 
-    let consumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
-      builder in
-      _ =
-        builder
-        .subscriptionName("ack-sub")
-    }
+    // Try to re-open the same exclusive subscription with retries to avoid broker-side teardown races
+    let consumer2: any ConsumerProtocol<String> = try await {
+      var lastError: Error?
+      for i in 0..<60 {
+        do {
+          return try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
+            builder in
+            _ =
+              builder
+              .subscriptionName("ack-sub")
+              .subscriptionType(.exclusive)
+          }
+        } catch {
+          lastError = error
+          if i == 59 { break }
+          try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+      }
+      throw lastError ?? PulsarClientError.unknownError("failed to reopen consumer")
+    }()
 
     // Should receive unacknowledged message again
-    let redeliveredMessage = try await consumer2.receive()
+    let redeliveredMessage = try await consumer2.receive(timeout: 15.0)
     #expect(redeliveredMessage.value == "Message 0")
 
     // Acknowledge this time

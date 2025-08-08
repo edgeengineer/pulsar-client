@@ -2,6 +2,15 @@
   "originHash" : "61315513ea794284639fa5545607b458c8c6bca8956bf72e3d3538b50b9a3c4a",
   "pins" : [
     {
+      "identity" : "cyclic-redundancy-check",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/edgeengineer/cyclic-redundancy-check.git",
+      "state" : {
+        "revision" : "2104bfa045460bfcfd1a3a8b8b4f117ce1f69013",
+        "version" : "0.0.5"
+      }
+    },
+    {
       "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-asn1.git",

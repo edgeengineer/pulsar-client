@@ -5,6 +5,7 @@ actor SendQueue<T: Sendable> {
   private var queue: [SendOperation<T>] = []
   private var waiters: [CheckedContinuation<SendOperation<T>, Error>] = []
   private let maxSize: Int
+  private var isCancelled: Bool = false
 
   init(maxSize: Int = 1000) {
     self.maxSize = maxSize
@@ -12,6 +13,11 @@ actor SendQueue<T: Sendable> {
 
   /// Enqueue a send operation
   func enqueue(_ operation: SendOperation<T>) async throws {
+    // Check if queue has been cancelled
+    guard !isCancelled else {
+      throw PulsarClientError.producerBusy("Producer closing - queue cancelled")
+    }
+
     guard queue.count < maxSize else {
       throw PulsarClientError.producerQueueFull
     }
@@ -31,10 +37,24 @@ actor SendQueue<T: Sendable> {
       return queue.removeFirst()
     }
 
-    // Wait for an operation
-    return try await withCheckedThrowingContinuation { continuation in
-      waiters.append(continuation)
+    // Wait for an operation with proper cancellation handling
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        waiters.append(continuation)
+      }
+    } onCancel: {
+      Task {
+        await self.cancelPendingWaiters()
+      }
     }
+  }
+
+  /// Cancel all pending waiters (called when tasks are cancelled)
+  private func cancelPendingWaiters() {
+    for waiter in waiters {
+      waiter.resume(throwing: CancellationError())
+    }
+    waiters.removeAll()
   }
 
   /// Peek at the first operation without removing it
@@ -56,6 +76,9 @@ actor SendQueue<T: Sendable> {
 
   /// Cancel all pending operations
   func cancelAll() {
+    // Set cancelled flag to prevent new enqueues
+    isCancelled = true
+
     // Cancel all queued operations
     for operation in queue {
       operation.fail(with: PulsarClientError.producerBusy("Producer closing"))

@@ -30,8 +30,8 @@ services:
     command: >
       bin/pulsar initialize-cluster-metadata
         --cluster cluster-a
-        --zookeeper zookeeper:2181
-        --configuration-store zookeeper:2181
+        --metadata-store zk:zookeeper:2181
+        --configuration-metadata-store zk:zookeeper:2181
         --web-service-url http://broker:8080
         --broker-service-url pulsar://broker:6650
     depends_on:
@@ -52,22 +52,23 @@ services:
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
       - PULSAR_GC=-XX:+UseG1GC
-      - zkServers=zookeeper:2181
-      - clusterName=cluster-a
-      - metadataServiceUri=zk:zookeeper:2181
-      - journalDirectory=/pulsar/data/journal
-      - ledgersDirectory=/pulsar/data/ledgers
+      # Use env overrides with PULSAR_PREFIX_ so bookkeeper.conf picks them up
+      - PULSAR_PREFIX_metadataServiceUri=zk://zookeeper:2181/ledgers
+      - PULSAR_PREFIX_zkServers=zookeeper:2181
+      - PULSAR_PREFIX_clusterName=cluster-a
+      - PULSAR_PREFIX_journalDirectory=/pulsar/data/journal
+      - PULSAR_PREFIX_ledgersDirectory=/pulsar/data/ledgers
     depends_on:
       zookeeper:
         condition: service_healthy
       pulsar-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3181"]
+      test: ["CMD-SHELL", "bash -lc 'echo > /dev/tcp/127.0.0.1/3181' "]
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 120s
+      start_period: 150s
     tmpfs:
       - /pulsar/data/journal:rw,noexec,nosuid,size=512m
       - /pulsar/data/ledgers:rw,noexec,nosuid,size=1g
@@ -86,10 +87,13 @@ services:
     command: bin/pulsar broker
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m
-      - zookeeperServers=zookeeper:2181
-      - clusterName=cluster-a
-      - advertisedAddress=broker
-      - advertisedListeners=pulsar://broker:6650
+      # Ensure broker.conf is overridden via PULSAR_PREFIX_
+      - PULSAR_PREFIX_zookeeperServers=zookeeper:2181
+      - PULSAR_PREFIX_configurationStoreServers=zookeeper:2181
+      - PULSAR_PREFIX_clusterName=cluster-a
+      - PULSAR_PREFIX_advertisedAddress=broker
+      # Helper script var is acceptable without prefix
+      - advertisedListeners=external:pulsar://broker:6650
     depends_on:
       zookeeper:
         condition: service_healthy

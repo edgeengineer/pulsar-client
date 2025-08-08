@@ -11,17 +11,8 @@ class RawFrameTest {
     self.testCase = try await IntegrationTestCase()
   }
 
-  // deinit returns before cleanup is complete, causing hanging tests
-  // so we use a semaphore to wait for the cleanup to complete
-  // replace with "isolated deinit" in Swift 6.2
-  deinit {
-    let semaphore = DispatchSemaphore(value: 0)
-    Task { [testCase] in
-      await testCase.cleanup()
-      semaphore.signal()
-    }
-    semaphore.wait()
-  }
+  // Non-blocking cleanup to avoid CI teardown deadlocks
+  deinit { Task { [testCase] in await testCase.cleanup() } }
 
   @Test("Check Raw Frame Flow", .timeLimit(.minutes(1)))
   func testRawFrameFlow() async throws {
