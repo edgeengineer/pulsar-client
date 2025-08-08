@@ -9,6 +9,7 @@ services:
       - PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
       - PULSAR_STANDALONE_RESET=true
+      - PULSAR_PREFIX_functionsWorkerEnabled=false
     command: |
       bash -lc '
         set -e
@@ -32,6 +33,8 @@ services:
 
         # Append to main config and start
         cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
+        # Pre-create functions worker config file to avoid FileNotFound if checked
+        : > /pulsar/conf/functions_worker.yml
         bin/pulsar standalone
       '
     # Health probed in CI via curl with token; omit container healthcheck to avoid act race
