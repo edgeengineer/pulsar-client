@@ -10,6 +10,7 @@ services:
     environment:
       - PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
+      - PULSAR_STANDALONE_RESET=true
     command: >
       bash -c "
         set -e
@@ -44,10 +45,10 @@ services:
              --auth-params \"token:${ADMIN}\" \
              brokers healthcheck"
         ]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
     tmpfs:
       - /pulsar/data:rw,noexec,nosuid,size=1g
       - /pulsar/conf:rw,noexec,nosuid,size=100m
