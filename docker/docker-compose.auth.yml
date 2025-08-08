@@ -35,6 +35,16 @@ services:
 
         # Append to main config and start (disable functions worker explicitly)
         cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
+        # Ensure ZooKeeper is up before initializing cluster metadata
+        bin/pulsar-daemon start zookeeper
+        for i in $(seq 1 60); do
+          if (echo > /dev/tcp/127.0.0.1/2181) >/dev/null 2>&1; then
+            echo "ZooKeeper is up"
+            break
+          fi
+          echo "Waiting for ZooKeeper on 127.0.0.1:2181 ($i)"; sleep 1
+        done
+
         # Initialize cluster metadata if not already initialized (idempotent)
         bin/pulsar initialize-cluster-metadata \
           --cluster standalone \
