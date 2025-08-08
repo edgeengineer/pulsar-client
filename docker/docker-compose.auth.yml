@@ -9,32 +9,20 @@ services:
       - PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g
       - PULSAR_STANDALONE_USE_ZOOKEEPER=true
       - PULSAR_STANDALONE_RESET=true
-      - PULSAR_PREFIX_functionsWorkerEnabled=false
       - PULSAR_LOG_CONF=/pulsar/conf/log4j2.yaml
     command: |
       bash -lc '
         set -e
-        # Generate keys for token authentication
-        bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
-        bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject admin > /pulsar/conf/admin.token
-        bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
-
-        # Build auth config without heredocs (act-safe)
-        ADMIN_TOKEN=$(tr -d "\r\n" < /pulsar/conf/admin.token)
-        {
-          echo "authenticationEnabled=true"
-          echo "authorizationEnabled=true"
-          echo "authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken"
-          echo "brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken"
-          echo "brokerClientAuthenticationParameters=token:${ADMIN_TOKEN}"
-          echo "tokenSecretKey=file:///pulsar/conf/secret.key"
-          echo "superUserRoles=admin"
-          echo "functionsWorkerEnabled=false"
-          echo "clusterName=standalone"
-        } > /pulsar/conf/auth-settings.conf
-
-        # Append to main config and start (disable functions worker explicitly)
-        cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
+        # Ensure test auth materials exist (idempotent)
+        if [ ! -f /pulsar/conf/secret.key ]; then
+          bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
+        fi
+        if [ ! -f /pulsar/conf/admin.token ]; then
+          bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject admin > /pulsar/conf/admin.token
+        fi
+        if [ ! -f /pulsar/conf/client.token ]; then
+          bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
+        fi
         # Ensure ZooKeeper is up before initializing cluster metadata
         bin/pulsar-daemon start zookeeper
         for i in $(seq 1 60); do
@@ -45,13 +33,18 @@ services:
           echo "Waiting for ZooKeeper on 127.0.0.1:2181 ($i)"; sleep 1
         done
 
-        # Initialize cluster metadata if not already initialized (idempotent)
-        bin/pulsar initialize-cluster-metadata \
-          --cluster standalone \
-          --zookeeper 127.0.0.1:2181 \
-          --configuration-store 127.0.0.1:2181 \
-          --web-service-url http://localhost:8080 \
-          --broker-service-url pulsar://localhost:6650 || true
+        # Initialize cluster metadata only once
+        if [ ! -f /pulsar/data/initialized ]; then
+          bin/pulsar initialize-cluster-metadata \
+            --cluster standalone \
+            --zookeeper 127.0.0.1:2181 \
+            --configuration-store 127.0.0.1:2181 \
+            --web-service-url http://localhost:8080 \
+            --broker-service-url pulsar://localhost:6650
+          touch /pulsar/data/initialized
+        else
+          echo "Cluster metadata already initialized"
+        fi
         bin/pulsar standalone --no-functions-worker
       '
     # Health probed in CI via curl with token; omit container healthcheck to avoid act race
