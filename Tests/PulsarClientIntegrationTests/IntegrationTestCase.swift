@@ -30,6 +30,9 @@ actor IntegrationTestCase {
     config.timeoutIntervalForRequest = 10
     self.urlSession = URLSession(configuration: config)
 
+    // Wait for broker health to avoid CI startup races
+    await waitForBrokerHealth(timeoutSeconds: 120)
+
     // Setup client with appropriate configuration
     self._client = try await createClient()
   }
@@ -171,6 +174,23 @@ actor IntegrationTestCase {
 
 // MARK: - Admin helpers
 extension IntegrationTestCase {
+  private func waitForBrokerHealth(timeoutSeconds: Int) async {
+    let admin = Self.adminURL
+    guard let url = URL(string: "\(admin)/admin/v2/brokers/health") else { return }
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    while Date() < deadline {
+      var req = URLRequest(url: url)
+      if let token = ProcessInfo.processInfo.environment["PULSAR_AUTH_TOKEN"] {
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      }
+      if let (_, resp) = try? await urlSession.data(for: req),
+        (resp as? HTTPURLResponse)?.statusCode == 200
+      {
+        return
+      }
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+    }
+  }
   /// Waits until the given subscription has no connected consumers (or the subscription is gone).
   /// Uses the Admin `stats` endpoint to poll broker state.
   func waitForNoConsumers(
