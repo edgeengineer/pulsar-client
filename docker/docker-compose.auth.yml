@@ -15,7 +15,6 @@ services:
       bash -lc '
         set -e
         set -x
-        # Ensure test auth materials exist (idempotent)
         if [ ! -f /pulsar/conf/secret.key ]; then
           bin/pulsar tokens create-secret-key --output /pulsar/conf/secret.key
         fi
@@ -25,22 +24,14 @@ services:
         if [ ! -f /pulsar/conf/client.token ]; then
           bin/pulsar tokens create --secret-key /pulsar/conf/secret.key --subject client > /pulsar/conf/client.token
         fi
-        # NOTE: Skip manual cluster metadata initialization; standalone handles it
         echo "Starting Pulsar Standalone service..."
         bin/pulsar standalone --no-functions-worker
       '
-    # Health probed in CI via curl with token; omit container healthcheck to avoid act race
     tmpfs:
       - /pulsar/data:rw,noexec,nosuid,size=1g
-    volumes:
-      - /Users/mihaichiorean/workspace/edgeengineer/pulsar-client/docker/pulsar/conf:/pulsar/conf
     networks:
       - pulsar-net
     restart: unless-stopped
-
-volumes:
-  # Named volume for data for persistence across restarts (even though it's tmpfs above in CI)
-  pulsar-data:
 
 networks:
   pulsar-net:
