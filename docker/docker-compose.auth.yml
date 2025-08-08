@@ -31,11 +31,9 @@ services:
           echo "functionsWorkerEnabled=false"
         } > /pulsar/conf/auth-settings.conf
 
-        # Append to main config and start
+        # Append to main config and start (disable functions worker explicitly)
         cat /pulsar/conf/auth-settings.conf >> /pulsar/conf/standalone.conf
-        # Pre-create functions worker config file to avoid FileNotFound if checked
-        : > /pulsar/conf/functions_worker.yml
-        bin/pulsar standalone
+        bin/pulsar standalone --no-functions-worker
       '
     # Health probed in CI via curl with token; omit container healthcheck to avoid act race
     tmpfs:
