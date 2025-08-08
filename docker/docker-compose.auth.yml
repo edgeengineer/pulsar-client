@@ -27,6 +27,7 @@ services:
           echo "brokerClientAuthenticationParameters=token:${ADMIN_TOKEN}"
           echo "tokenSecretKey=file:///pulsar/conf/secret.key"
           echo "superUserRoles=admin"
+          echo "functionsWorkerEnabled=false"
         } > /pulsar/conf/auth-settings.conf
 
         # Append to main config and start
