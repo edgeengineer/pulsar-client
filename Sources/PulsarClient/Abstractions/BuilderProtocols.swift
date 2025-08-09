@@ -16,77 +16,77 @@ import Foundation
 
 /// A protocol for building a Pulsar client.
 public protocol PulsarClientBuilderProtocol: Sendable {
-    func withServiceUrl(_ serviceUrl: String) -> Self
-    func withAuthentication(_ authentication: Authentication) -> Self
-    func withOperationTimeout(_ timeout: TimeInterval) -> Self
-    func withConnectionTimeout(_ timeout: TimeInterval) -> Self
-    func withMemoryLimit(_ limit: Int) -> Self
-    func build() throws -> PulsarClientProtocol
+  func withServiceUrl(_ serviceUrl: String) -> Self
+  func withAuthentication(_ authentication: Authentication) -> Self
+  func withOperationTimeout(_ timeout: TimeInterval) -> Self
+  func withConnectionTimeout(_ timeout: TimeInterval) -> Self
+  func withMemoryLimit(_ limit: Int) -> Self
+  func build() throws -> PulsarClientProtocol
 }
 
 /// A protocol for building a Pulsar producer.
 public protocol ProducerBuilderProtocol: Sendable {
-    associatedtype TMessage: Sendable
-    
-    func withTopic(_ topic: String) -> Self
-    func withProducerName(_ name: String) -> Self
-    func withInitialSequenceId(_ id: UInt64) -> Self
-    func withSendTimeout(_ timeout: TimeInterval) -> Self
-    func withBatching(_ enabled: Bool) -> Self
-    func withCompressionType(_ type: CompressionType) -> Self
-    func withMessageRouter(_ router: MessageRouter) -> Self
-    func withHashingScheme(_ scheme: HashingScheme) -> Self
-    func withBatchingMaxMessages(_ max: UInt) -> Self
-    func withBatchingMaxDelay(_ delay: TimeInterval) -> Self
-    func withBatchingMaxBytes(_ bytes: UInt) -> Self
-    func withCryptoKeyReader(_ reader: CryptoKeyReader) -> Self
-    func withEncryptionKeys(_ keys: [String]) -> Self
-    func build() async throws -> any ProducerProtocol
+  associatedtype TMessage: Sendable
+
+  func withTopic(_ topic: String) -> Self
+  func withProducerName(_ name: String) -> Self
+  func withInitialSequenceId(_ id: UInt64) -> Self
+  func withSendTimeout(_ timeout: TimeInterval) -> Self
+  func withBatching(_ enabled: Bool) -> Self
+  func withCompressionType(_ type: CompressionType) -> Self
+  func withMessageRouter(_ router: MessageRouter) -> Self
+  func withHashingScheme(_ scheme: HashingScheme) -> Self
+  func withBatchingMaxMessages(_ max: UInt) -> Self
+  func withBatchingMaxDelay(_ delay: TimeInterval) -> Self
+  func withBatchingMaxBytes(_ bytes: UInt) -> Self
+  func withCryptoKeyReader(_ reader: CryptoKeyReader) -> Self
+  func withEncryptionKeys(_ keys: [String]) -> Self
+  func build() async throws -> any ProducerProtocol
 }
 
 /// A protocol for building a Pulsar consumer.
 public protocol ConsumerBuilderProtocol: Sendable {
-    associatedtype TMessage: Sendable
-    
-    func withTopic(_ topic: String) -> Self
-    func withConsumerName(_ name: String) -> Self
-    func withSubscription(_ name: String) -> Self
-    func withSubscriptionType(_ type: SubscriptionType) -> Self
-    func withSubscriptionInitialPosition(_ position: SubscriptionInitialPosition) -> Self
-    func withAckTimeout(_ timeout: TimeInterval) -> Self
-    func withReceiverQueueSize(_ size: Int) -> Self
-    func withReadCompacted(_ enabled: Bool) -> Self
-    func withPriorityLevel(_ level: Int) -> Self
-    func build() async throws -> any ConsumerProtocol
+  associatedtype TMessage: Sendable
+
+  func withTopic(_ topic: String) -> Self
+  func withConsumerName(_ name: String) -> Self
+  func withSubscription(_ name: String) -> Self
+  func withSubscriptionType(_ type: SubscriptionType) -> Self
+  func withSubscriptionInitialPosition(_ position: SubscriptionInitialPosition) -> Self
+  func withAckTimeout(_ timeout: TimeInterval) -> Self
+  func withReceiverQueueSize(_ size: Int) -> Self
+  func withReadCompacted(_ enabled: Bool) -> Self
+  func withPriorityLevel(_ level: Int) -> Self
+  func build() async throws -> any ConsumerProtocol
 }
 
 /// A protocol for building a Pulsar reader.
 public protocol ReaderBuilderProtocol: Sendable {
-    associatedtype TMessage: Sendable
+  associatedtype TMessage: Sendable
 
-    func withTopic(_ topic: String) -> Self
-    func withReaderName(_ name: String) -> Self
-    func withStartMessageId(_ id: MessageId) -> Self
-    func withStartMessageFromRollbackDuration(_ duration: TimeInterval) -> Self
-    func withReceiverQueueSize(_ size: Int) -> Self
-    func withReadCompacted(_ enabled: Bool) -> Self
-    func build() async throws -> any ReaderProtocol
+  func withTopic(_ topic: String) -> Self
+  func withReaderName(_ name: String) -> Self
+  func withStartMessageId(_ id: MessageId) -> Self
+  func withStartMessageFromRollbackDuration(_ duration: TimeInterval) -> Self
+  func withReceiverQueueSize(_ size: Int) -> Self
+  func withReadCompacted(_ enabled: Bool) -> Self
+  func build() async throws -> any ReaderProtocol
 }
 
 /// A helper protocol for common builder properties.
 public protocol BuilderProtocol: AnyObject {
-    associatedtype Options
-    var options: Options { get set }
-    init(options: Options)
+  associatedtype Options
+  var options: Options { get set }
+  init(options: Options)
 }
 
-public extension BuilderProtocol where Options: Initializable {
-    init() {
-        self.init(options: .init())
-    }
+extension BuilderProtocol where Options: Initializable {
+  public init() {
+    self.init(options: .init())
+  }
 }
 
 /// A protocol to ensure a type has a parameterless initializer.
 public protocol Initializable {
-    init()
+  init()
 }

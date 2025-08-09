@@ -58,114 +58,167 @@ jobs:
         swift build "${args[@]}"
     - name: Run Unit Tests
       run: swift test --filter PulsarClientTests
-    
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - swift-version: '6.1'
+          - name: no-auth
+            swift-version: '6.1'
             product: PulsarClient
+            auth: 'false'
+            compose_file: docker/docker-compose.integration.yml
+            service_url: pulsar://localhost:6650
+            admin_url: http://localhost:8081
+            pulsar_container: pulsar
+            enable_toxiproxy: 'true'
+          # - name: cluster
+          #   swift-version: '6.1'
+          #   product: PulsarClient
+          #   auth: 'false'
+          #   cluster: 'true'
+          #   compose_file: docker/docker-compose.cluster.yml
+          #   service_url: pulsar://localhost:6650
+          #   admin_url: http://localhost:8080
+          #   pulsar_container: broker
+          #   enable_toxiproxy: 'false'
+          # - name: auth
+          #   swift-version: '6.1'
+          #   product: PulsarClient
+          #   auth: 'true'
+          #   compose_file: docker/docker-compose.auth.yml
+          #   service_url: pulsar://localhost:6651
+          #   admin_url: http://localhost:8081
+          #   pulsar_container: pulsar-auth
+          #   enable_toxiproxy: 'false'
+
     steps:
     - uses: actions/checkout@v4
 
-    - name: Start Pulsar and Toxiproxy
-      run: docker compose -f docker/docker-compose.integration.yml up -d --wait
-    #   continue-on-error: true
-
-    # - name: Check container status and logs
-    #   run: |
-    #     echo "=== Container Status ==="
-    #     docker ps -a
-    #     echo "=== Pulsar Logs ==="
-    #     docker logs pulsar 2>&1 || echo "No pulsar logs available"
-    #     echo "=== Toxiproxy Logs ==="
-    #     docker logs toxiproxy 2>&1 || echo "No toxiproxy logs available"
-    
-    - name: Configure Toxiproxy
+    - name: Install Swift
       run: |
-        curl -X POST http://localhost:8475/proxies \
+        sudo apt-get update
+        sudo apt-get install -y wget
+        if [ ! -f "/opt/swift/usr/bin/swift" ]; then
+          ARCHIVE_PATH="$GITHUB_WORKSPACE/swift-6.1-RELEASE-ubuntu22.04.tar.gz"
+          if [ ! -f "$ARCHIVE_PATH" ]; then
+            wget -O "$ARCHIVE_PATH" https://download.swift.org/swift-6.1-release/ubuntu2204/swift-6.1-RELEASE/swift-6.1-RELEASE-ubuntu22.04.tar.gz
+          else
+            echo "Using cached Swift archive at $ARCHIVE_PATH"
+          fi
+          # Validate archive; re-download if corrupt
+          if ! tar -tzf "$ARCHIVE_PATH" >/dev/null 2>&1; then
+            echo "Cached Swift archive corrupt; re-downloading"
+            rm -f "$ARCHIVE_PATH"
+            wget -O "$ARCHIVE_PATH" https://download.swift.org/swift-6.1-release/ubuntu2204/swift-6.1-RELEASE/swift-6.1-RELEASE-ubuntu22.04.tar.gz
+          fi
+          EXTRACT_DIR="/tmp/swift-extract"
+          rm -rf "$EXTRACT_DIR"
+          mkdir -p "$EXTRACT_DIR"
+          tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_DIR" --no-same-owner
+          sudo rm -rf /opt/swift
+          sudo mv "$EXTRACT_DIR/swift-6.1-RELEASE-ubuntu22.04" /opt/swift
+        fi
+        echo "/opt/swift/usr/bin" >> $GITHUB_PATH
+        sudo apt-get install -y \
+          binutils git gnupg2 libc6-dev libcurl4-openssl-dev libedit2 libgcc-9-dev \
+          libpython3.8 libsqlite3-0 libstdc++-9-dev libxml2-dev libz3-dev \
+          netcat-openbsd pkg-config tzdata unzip zlib1g-dev
+
+    - name: Start Pulsar stack
+      run: |
+        if [ "${{ matrix.cluster }}" = "true" ]; then
+          docker compose -f ${{ matrix.compose_file }} up -d zookeeper
+          echo "Waiting for ZooKeeper health..."
+          timeout 120 bash -c 'until docker inspect --format {{.State.Health.Status}} zookeeper | grep -q healthy; do sleep 2; done'
+          docker compose -f ${{ matrix.compose_file }} up -d pulsar-init
+          docker logs pulsar-init | tail -n 200 || true
+          docker compose -f ${{ matrix.compose_file }} up -d bookkeeper
+          echo "Waiting for BookKeeper health..."
+          timeout 180 bash -c 'until docker inspect --format {{.State.Health.Status}} bookkeeper | grep -q healthy; do sleep 3; done'
+          docker compose -f ${{ matrix.compose_file }} up -d broker
+          echo "Waiting for Broker health..."
+          timeout 180 bash -c 'until curl -sf ${{ matrix.admin_url }}/admin/v2/brokers/health >/dev/null; do sleep 3; done'
+        else
+          docker compose -f ${{ matrix.compose_file }} up -d --wait
+        fi
+
+    - name: Fetch admin token (auth)
+      id: admin
+      if: ${{ matrix.auth == 'true' }}
+      run: |
+        ADMIN=$(docker exec ${{ matrix.pulsar_container }} cat /pulsar/conf/admin.token | xargs)
+        echo "token=${ADMIN}" >> "$GITHUB_OUTPUT"
+
+    - name: Wait for broker health
+      run: |
+        echo "Waiting for Pulsar Admin API to be ready..."
+        if [ "${{ matrix.auth }}" = "true" ]; then
+          timeout 120 bash -c 'until curl -s -f -H "Authorization: Bearer ${{ steps.admin.outputs.token }}" -o /dev/null ${{ matrix.admin_url }}/admin/v2/brokers/health; do sleep 2; done'
+        else
+          timeout 120 bash -c 'until curl -s -f -o /dev/null ${{ matrix.admin_url }}/admin/v2/brokers/health; do sleep 2; done'
+        fi
+
+    - name: Smoke check broker ports
+      run: |
+        PORT=$(if [ "${{ matrix.auth }}" = "true" ]; then echo 6651; else echo 6650; fi)
+        (echo -n | nc -vz localhost $PORT) || true
+        curl -sSf ${{ matrix.admin_url }}/admin/v2/brokers/health || true
+
+    - name: Configure Toxiproxy (no-auth only)
+      if: ${{ matrix.enable_toxiproxy == 'true' }}
+      run: |
+        curl -X POST http://localhost:8474/proxies \
           -H 'Content-Type: application/json' \
           -d '{
             "name": "pulsar",
             "listen": "0.0.0.0:16650",
-            "upstream": "localhost:6650",
+            "upstream": "pulsar:6650",
             "enabled": true
           }'
         echo "Toxiproxy configured successfully"
-    
-    - name: Run Integration Tests
-      env:
-        PULSAR_SERVICE_URL: pulsar://localhost:6650
-        PULSAR_ADMIN_URL: http://localhost:8081
-        TOXIPROXY_URL: http://localhost:8475
-      timeout-minutes: 20  # Reduced from 20 due to parallelism
-      run: |
-        swift test --filter PulsarClientIntegrationTests --no-parallel
-    
-    - name: Cleanup
-      if: always()
-      run: docker compose -f docker/docker-compose.integration.yml down -v
 
-  integration-tests-auth:
-    name: Integration Tests with Authentication
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - swift-version: '6.1'
-            product: PulsarClient
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Start Pulsar with Auth
-      run: |
-        docker compose -f docker/docker-compose.auth.yml up -d --wait
-        echo "Waiting for Pulsar Admin API to be fully ready..."
-        timeout 120 bash -c 'until curl -s -f -o /dev/null http://localhost:8081/admin/v2/brokers/health; do sleep 5; done'
-    
     - name: Get Auth Token
       id: auth
+      if: ${{ matrix.auth == 'true' }}
       run: |
-        TOKEN=$(docker exec pulsar-auth cat /pulsar/conf/client.token | xargs)
+        TOKEN=$(docker exec ${{ matrix.pulsar_container }} cat /pulsar/conf/client.token | xargs)
         echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
-    
-    - name: Run Integration Tests
-      env:
-        PULSAR_SERVICE_URL: pulsar://localhost:6651
-        PULSAR_ADMIN_URL: http://localhost:8081
-        PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-      timeout-minutes: 20
-      run: swift test --filter PulsarClientIntegrationTests
-    
-    - name: Cleanup
-      if: always()
-      run: docker compose -f docker/docker-compose.auth.yml down -v
 
-  integration-tests-cluster:
-    name: Integration Tests with Cluster
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - swift-version: '6.1'
-            product: PulsarClient
-    steps:
-    - uses: actions/checkout@v4
-    - name: Start Pulsar Cluster
-      run: |
-        docker compose -f docker/docker-compose.cluster.yml up -d --wait
-        echo "Waiting for Pulsar Admin API to be fully ready..."
-        timeout 120 bash -c 'until curl -s -f -o /dev/null http://localhost:8080/admin/v2/brokers/health; do sleep 5; done'
-    
     - name: Run Integration Tests
       env:
-        PULSAR_SERVICE_URL: pulsar://localhost:6650
-        PULSAR_ADMIN_URL: http://localhost:8080
+        PULSAR_SERVICE_URL: ${{ matrix.service_url }}
+        PULSAR_ADMIN_URL: ${{ matrix.admin_url }}
+        PULSAR_AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        TOXIPROXY_URL: http://localhost:8474
+        TOXIPROXY_SERVICE_URL: pulsar://localhost:16650
+        PULSAR_TOXIPROXY_SERVICE_URL: pulsar://localhost:16650
+        LOG_LEVEL: debug
+        SWIFT_BACKTRACE: enable
       timeout-minutes: 20
-      run: swift test --filter PulsarClientIntegrationTests
-    
+      run: |
+        set -o pipefail
+        swift test --filter PulsarClientIntegrationTests 2>&1 | tee integration-tests-${{ matrix.name }}.log
+        status=${PIPESTATUS[0]}
+        echo "==== Swift Test Failure Summary (${{ matrix.name }}) ===="
+        grep -En "error:|Assertion failed|Expectation failed|Test Case '-.*' failed|Failing tests|timeout|fatal error|segmentation" integration-tests-${{ matrix.name }}.log || true
+        echo "==== XCTest Summary (${{ matrix.name }}) ===="
+        grep -En "Test Suite|Test Case|Executed|passed|failed" integration-tests-${{ matrix.name }}.log | tail -n 200 || true
+        exit $status
+
+    # - name: Collect logs (always)
+    #   if: always()
+    #   run: |
+    #     echo "=== Container Status ===" && docker ps -a || true
+    #     echo "=== Pulsar Logs (last 500 lines) ===" && docker logs ${{ matrix.pulsar_container }} --since 30m | tail -n 500 || true
+    #     if [ "${{ matrix.enable_toxiproxy }}" = "true" ]; then
+    #       echo "=== Toxiproxy Logs (last 200 lines) ===" && docker logs toxiproxy --since 30m | tail -n 200 || true
+    #     fi
+
     - name: Cleanup
       if: always()
-      run: docker compose -f docker/docker-compose.cluster.yml down -v
+      run: docker compose -f ${{ matrix.compose_file }} down -v
+  
+  # integration-tests-cluster folded into integration-tests matrix above

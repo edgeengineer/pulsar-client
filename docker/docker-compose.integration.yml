@@ -13,17 +13,17 @@ services:
     tmpfs:
       - /pulsar/data:rw,noexec,nosuid,size=1g  # ← Replace volume with tmpfs
     healthcheck:
-      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "bash", "-lc", "curl -sf http://localhost:8080/admin/v2/brokers/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
       retries: 30
-      start_period: 120s
+      start_period: 20s
 
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.11.0
     container_name: toxiproxy
     ports:
-      - "8475:8474"  # ← Use 8475 instead of 8474
+      - "8474:8474"
       - "16650:16650"
     # No healthcheck possible - this is a distroless container
     depends_on:

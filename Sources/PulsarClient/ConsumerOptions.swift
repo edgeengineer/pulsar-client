@@ -13,13 +13,13 @@
  */
 
 import Foundation
+
 #if canImport(RegexBuilder)
-import RegexBuilder
+  import RegexBuilder
 #endif
 
 /// The consumer building options.
-public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
-    
+public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {    
     // MARK: - Default Values
     
     /// The default initial position.
@@ -364,76 +364,62 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         copy.ackTimeout = timeout
         return copy
     }
-    
-    /// Returns a new ConsumerOptions with negative ack redelivery delay set
-    public func withNegativeAckRedeliveryDelay(_ delay: TimeInterval) -> ConsumerOptions {
-        var copy = self
-        copy.negativeAckRedeliveryDelay = delay
-        return copy
+
+    let hasTopics = !topic.isEmpty || !topics.isEmpty || topicsPattern != nil
+    guard hasTopics else {
+      throw PulsarClientError.invalidConfiguration(
+        "Must specify at least one topic, multiple topics, or a topics pattern")
     }
-    
-    /// Returns a new ConsumerOptions with crypto key reader set
-    public func withCryptoKeyReader(_ reader: CryptoKeyReader?) -> ConsumerOptions {
-        var copy = self
-        copy.cryptoKeyReader = reader
-        return copy
+
+    // Validate that only one topic specification method is used
+    let topicMethods = [
+      !topic.isEmpty,
+      !topics.isEmpty,
+      topicsPattern != nil,
+    ].filter { $0 }.count
+
+    guard topicMethods == 1 else {
+      throw PulsarClientError.invalidConfiguration(
+        "Must specify exactly one of: single topic, multiple topics, or topics pattern")
     }
-    
-    /// Returns a new ConsumerOptions with a subscription property added
-    public func withSubscriptionProperty(_ key: String, _ value: String) -> ConsumerOptions {
-        var copy = self
-        copy.subscriptionProperties[key] = value
-        return copy
+
+    guard messagePrefetchCount > 0 else {
+      throw PulsarClientError.invalidConfiguration("Message prefetch count must be greater than 0")
     }
-    
-    /// Returns a new ConsumerOptions with all subscription properties replaced
-    public func withSubscriptionProperties(_ properties: [String: String]) -> ConsumerOptions {
-        var copy = self
-        copy.subscriptionProperties = properties
-        return copy
+
+    guard priorityLevel >= 0 else {
+      throw PulsarClientError.invalidConfiguration("Priority level must be non-negative")
     }
-    
-    /// Returns a new ConsumerOptions with max total receiver queue size set
-    public func withMaxTotalReceiverQueueSizeAcrossPartitions(_ size: Int) -> ConsumerOptions {
-        var copy = self
-        copy.maxTotalReceiverQueueSizeAcrossPartitions = size
-        return copy
+
+    guard ackTimeout > 0 else {
+      throw PulsarClientError.invalidConfiguration("Acknowledgment timeout must be greater than 0")
     }
-    
-    /// Returns a new ConsumerOptions with auto acknowledge oldest chunked message setting
-    public func withAutoAcknowledgeOldestChunkedMessageOnQueueFull(_ enabled: Bool) -> ConsumerOptions {
-        var copy = self
-        copy.autoAcknowledgeOldestChunkedMessageOnQueueFull = enabled
-        return copy
+
+    guard negativeAckRedeliveryDelay > 0 else {
+      throw PulsarClientError.invalidConfiguration(
+        "Negative acknowledgment redelivery delay must be greater than 0")
     }
-    
-    /// Returns a new ConsumerOptions with expire time of incomplete chunked message set
-    public func withExpireTimeOfIncompleteChunkedMessage(_ time: TimeInterval) -> ConsumerOptions {
-        var copy = self
-        copy.expireTimeOfIncompleteChunkedMessage = time
-        return copy
+
+    guard maxTotalReceiverQueueSizeAcrossPartitions > 0 else {
+      throw PulsarClientError.invalidConfiguration(
+        "Max total receiver queue size across partitions must be greater than 0")
     }
-    
-    /// Returns a new ConsumerOptions with pattern auto discovery period set
-    public func withPatternAutoDiscoveryPeriod(_ period: TimeInterval) -> ConsumerOptions {
-        var copy = self
-        copy.patternAutoDiscoveryPeriod = period
-        return copy
+
+    guard expireTimeOfIncompleteChunkedMessage > 0 else {
+      throw PulsarClientError.invalidConfiguration(
+        "Expire time of incomplete chunked message must be greater than 0")
     }
-    
-    /// Returns a new ConsumerOptions with max pending chunked message set
-    public func withMaxPendingChunkedMessage(_ count: Int) -> ConsumerOptions {
-        var copy = self
-        copy.maxPendingChunkedMessage = count
-        return copy
+
+    guard patternAutoDiscoveryPeriod > 0 else {
+      throw PulsarClientError.invalidConfiguration(
+        "Pattern auto discovery period must be greater than 0")
     }
-    
-    /// Returns a new ConsumerOptions with receiver queue size set
-    public func withReceiverQueueSize(_ size: Int) -> ConsumerOptions {
-        var copy = self
-        copy.receiverQueueSize = size
-        return copy
+
+    guard maxPendingChunkedMessage > 0 else {
+      throw PulsarClientError.invalidConfiguration(
+        "Max pending chunked message must be greater than 0")
     }
+
     
     /// Returns a new ConsumerOptions with dead letter policy set
     public func withDeadLetterPolicy(_ policy: DeadLetterPolicy?) -> ConsumerOptions {
@@ -455,5 +441,83 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         copy.interceptors.append(interceptor)
         return copy
     }
-}
 
+
+  /// Returns a new ConsumerOptions with ack timeout set
+  public func withAckTimeout(_ timeout: TimeInterval) -> ConsumerOptions {
+    var copy = self
+    copy.ackTimeout = timeout
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with negative ack redelivery delay set
+  public func withNegativeAckRedeliveryDelay(_ delay: TimeInterval) -> ConsumerOptions {
+    var copy = self
+    copy.negativeAckRedeliveryDelay = delay
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with crypto key reader set
+  public func withCryptoKeyReader(_ reader: CryptoKeyReader?) -> ConsumerOptions {
+    var copy = self
+    copy.cryptoKeyReader = reader
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with a subscription property added
+  public func withSubscriptionProperty(_ key: String, _ value: String) -> ConsumerOptions {
+    var copy = self
+    copy.subscriptionProperties[key] = value
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with all subscription properties replaced
+  public func withSubscriptionProperties(_ properties: [String: String]) -> ConsumerOptions {
+    var copy = self
+    copy.subscriptionProperties = properties
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with max total receiver queue size set
+  public func withMaxTotalReceiverQueueSizeAcrossPartitions(_ size: Int) -> ConsumerOptions {
+    var copy = self
+    copy.maxTotalReceiverQueueSizeAcrossPartitions = size
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with auto acknowledge oldest chunked message setting
+  public func withAutoAcknowledgeOldestChunkedMessageOnQueueFull(_ enabled: Bool) -> ConsumerOptions
+  {
+    var copy = self
+    copy.autoAcknowledgeOldestChunkedMessageOnQueueFull = enabled
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with expire time of incomplete chunked message set
+  public func withExpireTimeOfIncompleteChunkedMessage(_ time: TimeInterval) -> ConsumerOptions {
+    var copy = self
+    copy.expireTimeOfIncompleteChunkedMessage = time
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with pattern auto discovery period set
+  public func withPatternAutoDiscoveryPeriod(_ period: TimeInterval) -> ConsumerOptions {
+    var copy = self
+    copy.patternAutoDiscoveryPeriod = period
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with max pending chunked message set
+  public func withMaxPendingChunkedMessage(_ count: Int) -> ConsumerOptions {
+    var copy = self
+    copy.maxPendingChunkedMessage = count
+    return copy
+  }
+
+  /// Returns a new ConsumerOptions with receiver queue size set
+  public func withReceiverQueueSize(_ size: Int) -> ConsumerOptions {
+    var copy = self
+    copy.receiverQueueSize = size
+    return copy
+  }
+}

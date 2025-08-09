@@ -16,52 +16,52 @@ import Foundation
 
 /// Protocol for handling exceptions
 public protocol HandleExceptionProtocol: Sendable {
-    /// Handle an exception
-    /// - Parameter context: The exception context
-    func onException(_ context: ExceptionContext) async
+  /// Handle an exception
+  /// - Parameter context: The exception context
+  func onException(_ context: ExceptionContext) async
 }
 
 /// Protocol for handling state changes
 public protocol HandleStateChangedProtocol<TStateChanged>: Sendable {
-    associatedtype TStateChanged: Sendable
-    
-    /// Handle a state change
-    /// - Parameter stateChanged: The state change event
-    func onStateChanged(_ stateChanged: TStateChanged) async
+  associatedtype TStateChanged: Sendable
+
+  /// Handle a state change
+  /// - Parameter stateChanged: The state change event
+  func onStateChanged(_ stateChanged: TStateChanged) async
 }
 
 /// Simple exception handler implementation
 public struct SimpleExceptionHandler: HandleExceptionProtocol {
-    public init() {}
-    
-    public func onException(_ context: ExceptionContext) async {
-        // Default implementation - just log the error
-        print("[PulsarClient] Exception in \(context.operationType): \(context.exception)")
-    }
+  public init() {}
+
+  public func onException(_ context: ExceptionContext) async {
+    // Default implementation - just log the error
+    print("[PulsarClient] Exception in \(context.operationType): \(context.exception)")
+  }
 }
 
 /// Closure-based exception handler
 public struct ClosureExceptionHandler: HandleExceptionProtocol {
-    private let handler: @Sendable (ExceptionContext) async -> Void
-    
-    public init(_ handler: @escaping @Sendable (ExceptionContext) async -> Void) {
-        self.handler = handler
-    }
-    
-    public func onException(_ context: ExceptionContext) async {
-        await handler(context)
-    }
+  private let handler: @Sendable (ExceptionContext) async -> Void
+
+  public init(_ handler: @escaping @Sendable (ExceptionContext) async -> Void) {
+    self.handler = handler
+  }
+
+  public func onException(_ context: ExceptionContext) async {
+    await handler(context)
+  }
 }
 
 /// Closure-based state change handler
 public struct ClosureStateChangeHandler<TStateChanged: Sendable>: HandleStateChangedProtocol {
-    private let handler: @Sendable (TStateChanged) async -> Void
-    
-    public init(_ handler: @escaping @Sendable (TStateChanged) async -> Void) {
-        self.handler = handler
-    }
-    
-    public func onStateChanged(_ stateChanged: TStateChanged) async {
-        await handler(stateChanged)
-    }
+  private let handler: @Sendable (TStateChanged) async -> Void
+
+  public init(_ handler: @escaping @Sendable (TStateChanged) async -> Void) {
+    self.handler = handler
+  }
+
+  public func onStateChanged(_ stateChanged: TStateChanged) async {
+    await handler(stateChanged)
+  }
 }

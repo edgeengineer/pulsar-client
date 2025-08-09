@@ -60,29 +60,29 @@ public protocol PulsarClientProtocol: Sendable {
 
 /// Client state
 public enum ClientState: Sendable, Equatable {
-    case disconnected
-    case initializing
-    case connecting
-    case connected
-    case reconnecting
-    case closing
-    case closed
-    case faulted(Error)
-    
-    public static func ==(lhs: ClientState, rhs: ClientState) -> Bool {
-        switch (lhs, rhs) {
-        case (.disconnected, .disconnected),
-             (.initializing, .initializing),
-             (.connecting, .connecting),
-             (.connected, .connected),
-             (.reconnecting, .reconnecting),
-             (.closing, .closing),
-             (.closed, .closed):
-            return true
-        case (.faulted(_), .faulted(_)):
-            return true
-        default:
-            return false
-        }
+  case disconnected
+  case initializing
+  case connecting
+  case connected
+  case reconnecting
+  case closing
+  case closed
+  case faulted(Error)
+
+  public static func == (lhs: ClientState, rhs: ClientState) -> Bool {
+    switch (lhs, rhs) {
+    case (.disconnected, .disconnected),
+      (.initializing, .initializing),
+      (.connecting, .connecting),
+      (.connected, .connected),
+      (.reconnecting, .reconnecting),
+      (.closing, .closing),
+      (.closed, .closed):
+      return true
+    case (.faulted(_), .faulted(_)):
+      return true
+    default:
+      return false
     }
+  }
 }

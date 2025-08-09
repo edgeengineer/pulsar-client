@@ -1,116 +1,132 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import PulsarClient
 
 @Suite("Consumer Integration Tests")
 class ConsumerIntegrationTests {
-    let testCase: IntegrationTestCase
-    
-    init() async throws {
-        self.testCase = try await IntegrationTestCase()
-    }
-    
-    // deinit returns before cleanup is complete, causing hanging tests
-    // so we use a semaphore to wait for the cleanup to complete
-    // replace with "isolated deinit" in Swift 6.2
-    deinit {
-        let semaphore = DispatchSemaphore(value: 0)
-        Task { [testCase] in
-            await testCase.cleanup()
-            semaphore.signal()
-        }
-        semaphore.wait()
-    }
-    
-    @Test("Subscription Types")
-    func testSubscriptionTypes() async throws {
-        let topic = try await testCase.createTopic()
-        guard let client = await testCase.client else {
-            throw IntegrationTestError.clientNotInitialized
-        }
-        
-        let testId = UUID().uuidString.prefix(8)
-        
-        // Test Exclusive subscription
-        let exclusiveConsumer = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
-            _ = builder
-                .subscriptionName("exclusive-sub-\(testId)")
-                .subscriptionType(.exclusive)
-        }
-        
-        // Second exclusive consumer should fail
-        await #expect(throws: Error.self) {
-            try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
-                _ = builder
-                    .subscriptionName("exclusive-sub-\(testId)")
-                    .subscriptionType(.exclusive)
-            }
-        }
-        
-        await exclusiveConsumer.dispose()
-        
-        // Test Shared subscription
-        let sharedConsumer1 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
-            _ = builder
-                .subscriptionName("shared-sub-\(testId)")
-                .subscriptionType(.shared)
-        }
-        
-        let sharedConsumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
-            _ = builder
-                .subscriptionName("shared-sub-\(testId)")
-                .subscriptionType(.shared)
-        }
+  let testCase: IntegrationTestCase
 
-        // check that the consumers are connected
-        #expect(sharedConsumer1.state == .connected)
-        #expect(sharedConsumer2.state == .connected)
-        
-        await sharedConsumer1.dispose()
-        await sharedConsumer2.dispose()
+  init() async throws {
+    self.testCase = try await IntegrationTestCase()
+  }
+
+  // Non-blocking cleanup to avoid CI teardown deadlocks
+  deinit { Task { [testCase] in await testCase.cleanup() } }
+
+  @Test("Subscription Types", .timeLimit(.minutes(2)))
+  func testSubscriptionTypes() async throws {
+    let topic = try await testCase.createTopic()
+    guard let client = await testCase.client else {
+      throw IntegrationTestError.clientNotInitialized
     }
-    
-    @Test("Message Acknowledgment")
-    func testAcknowledgment() async throws {
-        let topic = try await testCase.createTopic()
-        guard let client = await testCase.client else {
-            throw IntegrationTestError.clientNotInitialized
-        }
-        
-        let testId = UUID().uuidString.prefix(8)
-        let producer = try await client.newStringProducer(topic: topic)
-        
-        let consumer = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
-            _ = builder
-                .subscriptionName("ack-sub-\(testId)")
-                .initialPosition(.earliest)
-        }
-        
-        // Send messages
-        for i in 0..<5 {
-            try await producer.send("Message \(i)")
-        }
-        
-        // Receive but don't acknowledge first message
-        let firstMessage = try await consumer.receive()
-        #expect(firstMessage.value == "Message 0")
-        
-        // Close and reopen consumer
-        await consumer.dispose()
-        
-        let consumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
-            _ = builder
-                .subscriptionName("ack-sub-\(testId)")
-        }
-        
-        // Should receive unacknowledged message again
-        let redeliveredMessage = try await consumer2.receive()
-        #expect(redeliveredMessage.value == "Message 0")
-        
-        // Acknowledge this time
-        try await consumer2.acknowledge(redeliveredMessage)
-        
-        await producer.dispose()
-        await consumer2.dispose()
+
+    // Test Exclusive subscription
+    let exclusiveConsumer = try await client.newConsumer(
+      topic: topic, schema: Schema<String>.string
+    ) { builder in
+      _ =
+        builder
+        .subscriptionName("exclusive-sub")
+        .subscriptionType(.exclusive)
     }
+
+    // Second exclusive consumer should fail
+    await #expect(throws: Error.self) {
+      try await client.newConsumer(topic: topic, schema: Schema<String>.string) { builder in
+        _ =
+          builder
+          .subscriptionName("exclusive-sub")
+          .subscriptionType(.exclusive)
+      }
+    }
+    await exclusiveConsumer.dispose()
+
+    // Test Shared subscription
+    let sharedConsumer1 = try await client.newConsumer(topic: topic, schema: Schema<String>.string)
+    { builder in
+      _ =
+        builder
+        .subscriptionName("shared-sub")
+        .subscriptionType(.shared)
+    }
+
+    let sharedConsumer2 = try await client.newConsumer(topic: topic, schema: Schema<String>.string)
+    { builder in
+      _ =
+        builder
+        .subscriptionName("shared-sub")
+        .subscriptionType(.shared)
+    }
+
+    // check that the consumers are connected
+    #expect(sharedConsumer1.state == .connected)
+    #expect(sharedConsumer2.state == .connected)
+
+    await sharedConsumer1.dispose()
+    await sharedConsumer2.dispose()
+  }
+
+  @Test("Message Acknowledgment", .timeLimit(.minutes(3)))
+  func testAcknowledgment() async throws {
+    let topic = try await testCase.createTopic()
+    guard let client = await testCase.client else {
+      throw IntegrationTestError.clientNotInitialized
+    }
+
+    let producer = try await client.newStringProducer(topic: topic)
+
+    let consumer = try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
+      builder in
+      _ =
+        builder
+        .subscriptionName("ack-sub")
+        .subscriptionType(.exclusive)
+        .initialPosition(.earliest)
+    }
+
+    // Send messages
+    for i in 0..<5 {
+      try await producer.send("Message \(i)")
+    }
+
+    // Receive but don't acknowledge first message
+    let firstMessage = try await consumer.receive(timeout: 15.0)
+    #expect(firstMessage.value == "Message 0")
+
+    // Close and reopen consumer (wait until broker fully detaches first consumer)
+    await consumer.dispose()
+    await testCase.waitForNoConsumers(topic: topic, subscription: "ack-sub", timeout: 20)
+
+    // Try to re-open the same exclusive subscription with retries to avoid broker-side teardown races
+    let consumer2: any ConsumerProtocol<String> = try await {
+      var lastError: Error?
+      for i in 0..<60 {
+        do {
+          return try await client.newConsumer(topic: topic, schema: Schema<String>.string) {
+            builder in
+            _ =
+              builder
+              .subscriptionName("ack-sub")
+              .subscriptionType(.exclusive)
+          }
+        } catch {
+          lastError = error
+          if i == 59 { break }
+          try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+      }
+      throw lastError ?? PulsarClientError.unknownError("failed to reopen consumer")
+    }()
+
+    // Should receive unacknowledged message again
+    let redeliveredMessage = try await consumer2.receive(timeout: 15.0)
+    #expect(redeliveredMessage.value == "Message 0")
+
+    // Acknowledge this time
+    try await consumer2.acknowledge(redeliveredMessage)
+
+    await producer.dispose()
+    await consumer2.dispose()
+  }
 }
