@@ -170,9 +170,6 @@ public struct MessageBuilder<T>: MessageBuilderProtocol where T: Sendable {
         
         return try await producer.send(value, metadata: metadata)
     }
-
-    return try await producer.send(value, metadata: metadata)
-  }
 }
 
 /// Extension to ProducerProtocol to provide message builder

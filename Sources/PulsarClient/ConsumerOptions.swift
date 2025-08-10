@@ -364,62 +364,6 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         copy.ackTimeout = timeout
         return copy
     }
-
-    let hasTopics = !topic.isEmpty || !topics.isEmpty || topicsPattern != nil
-    guard hasTopics else {
-      throw PulsarClientError.invalidConfiguration(
-        "Must specify at least one topic, multiple topics, or a topics pattern")
-    }
-
-    // Validate that only one topic specification method is used
-    let topicMethods = [
-      !topic.isEmpty,
-      !topics.isEmpty,
-      topicsPattern != nil,
-    ].filter { $0 }.count
-
-    guard topicMethods == 1 else {
-      throw PulsarClientError.invalidConfiguration(
-        "Must specify exactly one of: single topic, multiple topics, or topics pattern")
-    }
-
-    guard messagePrefetchCount > 0 else {
-      throw PulsarClientError.invalidConfiguration("Message prefetch count must be greater than 0")
-    }
-
-    guard priorityLevel >= 0 else {
-      throw PulsarClientError.invalidConfiguration("Priority level must be non-negative")
-    }
-
-    guard ackTimeout > 0 else {
-      throw PulsarClientError.invalidConfiguration("Acknowledgment timeout must be greater than 0")
-    }
-
-    guard negativeAckRedeliveryDelay > 0 else {
-      throw PulsarClientError.invalidConfiguration(
-        "Negative acknowledgment redelivery delay must be greater than 0")
-    }
-
-    guard maxTotalReceiverQueueSizeAcrossPartitions > 0 else {
-      throw PulsarClientError.invalidConfiguration(
-        "Max total receiver queue size across partitions must be greater than 0")
-    }
-
-    guard expireTimeOfIncompleteChunkedMessage > 0 else {
-      throw PulsarClientError.invalidConfiguration(
-        "Expire time of incomplete chunked message must be greater than 0")
-    }
-
-    guard patternAutoDiscoveryPeriod > 0 else {
-      throw PulsarClientError.invalidConfiguration(
-        "Pattern auto discovery period must be greater than 0")
-    }
-
-    guard maxPendingChunkedMessage > 0 else {
-      throw PulsarClientError.invalidConfiguration(
-        "Max pending chunked message must be greater than 0")
-    }
-
     
     /// Returns a new ConsumerOptions with dead letter policy set
     public func withDeadLetterPolicy(_ policy: DeadLetterPolicy?) -> ConsumerOptions {
@@ -442,14 +386,7 @@ public struct ConsumerOptions<TMessage>: Sendable where TMessage: Sendable {
         return copy
     }
 
-
-  /// Returns a new ConsumerOptions with ack timeout set
-  public func withAckTimeout(_ timeout: TimeInterval) -> ConsumerOptions {
-    var copy = self
-    copy.ackTimeout = timeout
-    return copy
-  }
-
+  
   /// Returns a new ConsumerOptions with negative ack redelivery delay set
   public func withNegativeAckRedeliveryDelay(_ delay: TimeInterval) -> ConsumerOptions {
     var copy = self

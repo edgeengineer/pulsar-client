@@ -128,7 +128,7 @@ extension Connection {
            try await sendFrame(frame)
             
             // Wait for response with timeout
-           let response = try await withTimeout(seconds: 30) { [logger] in
+           let response = try await withTimeout(seconds: 30) {
                for try await command in responseContinuation.stream {
                    return command
                }

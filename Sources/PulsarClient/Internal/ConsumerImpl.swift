@@ -406,6 +406,11 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         // Close message queue
         await messageQueue.finish()
         
+        // Dispose DLQ handler if configured
+        if let dlqHandler = dlqHandler {
+            await dlqHandler.dispose()
+        }
+        
         // Send close consumer command
         let command = await connection.commandBuilder.closeConsumer(consumerId: id)
         let frame = PulsarFrame(command: command)

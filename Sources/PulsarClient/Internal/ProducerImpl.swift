@@ -79,6 +79,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     )
     self.exceptionHandler = DefaultExceptionHandler(logger: logger)
 
+    // Initialize interceptors if configured
+    if !configuration.interceptors.isEmpty {
+      self.interceptors = ProducerInterceptors(interceptors: configuration.interceptors)
+    } else {
+      self.interceptors = nil
+    }
+    
     // Initialize batch builder if batching is enabled
     if configuration.batchingEnabled {
       self.batchBuilder = MessageBatchBuilder(
@@ -262,7 +269,11 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       )
 
       // Use the serial dispatch queue to ensure FIFO ordering
-      return try await enqueueAndWait(metadata: protoMetadata, payload: payload)
+      return try await enqueueAndWait(
+        metadata: protoMetadata, 
+        payload: payload,
+        interceptorMessage: interceptorMessage
+      )
   }
 
   public func sendBatch(_ messages: [T]) async throws -> [MessageId] {
@@ -330,14 +341,19 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   // MARK: - Private Methods
 
   /// Enqueue operation and wait for completion with FIFO ordering
-  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
-    -> MessageId
-  {
+  private func enqueueAndWait(
+    metadata: Pulsar_Proto_MessageMetadata, 
+    payload: Data,
+    interceptorMessage: Message<T>? = nil
+  ) async throws -> MessageId {
     return try await withCheckedThrowingContinuation { continuation in
       let sendOp = SendOperation<T>(
         metadata: metadata,
         payload: payload,
-        continuation: continuation
+        continuation: continuation,
+        interceptorMessage: interceptorMessage,
+        interceptors: interceptors,
+        producer: self
       )
 
       // Use serial dispatch queue to maintain FIFO ordering
