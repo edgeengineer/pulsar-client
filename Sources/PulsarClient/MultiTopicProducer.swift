@@ -30,7 +30,7 @@ public actor RoundRobinTopicRouter<T: Sendable>: TopicRouter {
         topics: [String]
     ) async -> String {
         guard !topics.isEmpty else {
-            fatalError("No topics available for routing")
+            return ""
         }
         
         let topic = topics[index % topics.count]
@@ -49,7 +49,7 @@ public struct KeyBasedTopicRouter<T: Sendable>: TopicRouter {
         topics: [String]
     ) async -> String {
         guard !topics.isEmpty else {
-            fatalError("No topics available for routing")
+            return ""
         }
         
         // Route based on message key

@@ -459,7 +459,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
                 publishTime: Date(timeIntervalSince1970: Double(metadata.publishTime) / 1000.0),
                 producerName: metadata.producerName,
                 replicatedFrom: metadata.hasReplicatedFrom ? metadata.replicatedFrom : nil,
-                topicName: topicName
+                topicName: topicName,
+                redeliveryCount: commandMessage.hasRedeliveryCount ? commandMessage.redeliveryCount : 0
             )
             
             // Update last received message ID

@@ -249,6 +249,14 @@ extension Connection {
       return command.unsubscribe.requestID
     case .seek:
       return command.seek.requestID
+    case .newTxn:
+      return command.newTxn.requestID
+    case .addPartitionToTxn:
+      return command.addPartitionToTxn.requestID
+    case .endTxn:
+      return command.endTxn.requestID
+    case .addSubscriptionToTxn:
+      return command.addSubscriptionToTxn.requestID
     default:
       return nil
     }
@@ -270,6 +278,14 @@ extension Connection {
       return command.getLastMessageIDResponse.requestID
     case .getSchemaResponse:
       return command.getSchemaResponse.requestID
+    case .newTxnResponse:
+      return command.newTxnResponse.requestID
+    case .addPartitionToTxnResponse:
+      return command.addPartitionToTxnResponse.requestID
+    case .endTxnResponse:
+      return command.endTxnResponse.requestID
+    case .addSubscriptionToTxnResponse:
+      return command.addSubscriptionToTxnResponse.requestID
     case .closeProducer:
       // Broker may send Success for close; map via Success handler
       return nil
