@@ -228,15 +228,10 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       var msg = Message(
             id: MessageId(ledgerId: 0, entryId: 0),  // Will be set after send
             value: message,
-            key: metadata.key,
-            properties: metadata.properties,
-            eventTime: metadata.eventTime,
+            metadata: metadata,
             publishTime: Date(),
             producerName: producerName,
-            sequenceId: metadata.sequenceId,
             replicatedFrom: nil,
-            partitionKey: nil,
-            schemaVersion: nil,
             topicName: topic,
             redeliveryCount: 0,
             data: nil
@@ -250,8 +245,8 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // Store the message for interceptor notification
       let interceptorMessage = msg
 
-      // Assign sequence ID synchronously to ensure ordering
-      var metadata = metadata
+      // Use the potentially modified metadata from the interceptor
+      var metadata = msg.metadata
       if metadata.sequenceId == nil {
         metadata.sequenceId = nextSequenceId()
       }

@@ -89,12 +89,20 @@ struct InterceptorIntegrationTests {
             return modifiedMessage
         }
         
-        func onAcknowledge(consumer: any ConsumerProtocol<String>, messageIds: [MessageId]) async {
+        func onAcknowledge(consumer: any ConsumerProtocol<String>, messageId: MessageId, error: Error?) async {
             onAckCount += 1
         }
         
-        func onNegativeAcksSend(consumer: any ConsumerProtocol<String>, messageIds: [MessageId]) async {
+        func onAcknowledgeCumulative(consumer: any ConsumerProtocol<String>, messageId: MessageId, error: Error?) async {
+            // Not counting cumulative acks separately in this test
+        }
+        
+        func onNegativeAcksSend(consumer: any ConsumerProtocol<String>, messageIds: Set<MessageId>) async {
             onNackCount += 1
+        }
+        
+        func close() async {
+            // No cleanup needed for test
         }
     }
     

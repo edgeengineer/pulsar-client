@@ -99,6 +99,7 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
     private var _state: ClientState = .initializing
     public let stateStream: AsyncStream<ClientState>
     private let stateContinuation: AsyncStream<ClientState>.Continuation
+    private var initializationTask: Task<Void, Never>?
     
     public nonisolated var topic: String {
         return topics.joined(separator: ",")
@@ -119,7 +120,7 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
         schema: Schema<T>,
         configuration: ProducerOptions<T>,
         topicRouter: (any TopicRouter<T>)? = nil
-    ) {
+    ) async {
         self.client = client
         self.topics = topics
         self.schema = schema
@@ -128,7 +129,7 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
         
-        Task {
+        self.initializationTask = Task {
             await initialize()
         }
     }
@@ -209,6 +210,9 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
     }
     
     public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
+        // Wait for initialization to complete
+        await initializationTask?.value
+        
         guard _state == .connected else {
             throw PulsarClientError.producerBusy("Multi-topic producer not connected")
         }
@@ -235,6 +239,9 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
     }
     
     public func sendBatch(_ messages: [T]) async throws -> [MessageId] {
+        // Wait for initialization to complete
+        await initializationTask?.value
+        
         guard _state == .connected else {
             throw PulsarClientError.producerBusy("Multi-topic producer not connected")
         }
@@ -252,6 +259,9 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
     }
     
     public func flush() async throws {
+        // Wait for initialization to complete
+        await initializationTask?.value
+        
         guard _state == .connected else {
             throw PulsarClientError.producerBusy("Multi-topic producer not connected")
         }
@@ -415,7 +425,7 @@ public final class MultiTopicProducerBuilder<T: Sendable> {
     }
     
     public func build() async throws -> MultiTopicProducer<T> {
-        return MultiTopicProducer(
+        return await MultiTopicProducer(
             client: client,
             topics: topics,
             schema: schema,
