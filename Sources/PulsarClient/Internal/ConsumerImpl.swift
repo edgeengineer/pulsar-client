@@ -202,8 +202,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             message = try await interceptors.beforeConsume(consumer: self, message: message)
         }
         
-        // Flow control: request more messages if needed (more aggressive like C# client)
-        permits -= 1
+        // Flow control: request more messages if needed
+        // Note: permits are already decremented in handleIncomingMessage
         if permits <= configuration.receiverQueueSize / 4 {
             await requestMoreMessages()
         }
@@ -337,6 +337,9 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         try await connection.sendCommand(frame)
         logger.trace("Negatively acknowledged message \(message.id)")
         
+        // Note: We don't need to restore permits here because the broker will
+        // redeliver the message which will use a permit when it arrives
+        
         // Notify interceptors of negative acknowledgment
         if let interceptors = interceptors {
             await interceptors.onNegativeAcksSend(consumer: self, messageIds: Set([message.id]))
@@ -466,6 +469,10 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             
             // Update last received message ID
             lastReceivedMessageId = message.id
+            
+            // Decrement permits since we received a message from broker
+            permits -= 1
+            logger.trace("Received message, permits remaining: \(permits)")
             
             // Add to queue
             await messageQueue.send(message)

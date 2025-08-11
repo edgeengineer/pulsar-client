@@ -33,25 +33,35 @@ actor DeadLetterQueueHandler<T: Sendable> {
     
     /// Track a negative acknowledgment and check if message should go to DLQ
     func trackNegativeAck(message: Message<T>) -> Bool {
-        // The message's redeliveryCount tells us how many times it has been redelivered
-        // After this negative ack, it would be redelivered with count = current + 1
-        // If that would reach or exceed maxRedeliverCount, send to DLQ now
-        let nextRedeliveryCount = Int(message.redeliveryCount) + 1
+        // Track how many times we've negatively acknowledged this specific message
+        let currentNegAckCount = negativeAckCounts[message.id, default: 0]
+        let newNegAckCount = currentNegAckCount + 1
+        negativeAckCounts[message.id] = newNegAckCount
         
-        if nextRedeliveryCount >= policy.maxRedeliverCount {
+        // Use the greater of broker's redeliveryCount or our tracked negative acks
+        // This handles cases where the broker doesn't increment redeliveryCount for explicit negative acks
+        let effectiveRedeliveryCount = max(Int(message.redeliveryCount), currentNegAckCount)
+        
+        // After this negative ack, the effective count will be one more
+        let nextEffectiveCount = effectiveRedeliveryCount + 1
+        
+        if nextEffectiveCount >= policy.maxRedeliverCount {
             logger.info("Message will reach max redelivery count after this negative ack", metadata: [
                 "messageId": "\(message.id)",
-                "currentRedeliveryCount": "\(message.redeliveryCount)",
-                "nextRedeliveryCount": "\(nextRedeliveryCount)",
+                "brokerRedeliveryCount": "\(message.redeliveryCount)",
+                "negativeAckCount": "\(newNegAckCount)",
+                "effectiveCount": "\(nextEffectiveCount)",
                 "maxRedeliverCount": "\(policy.maxRedeliverCount)"
             ])
-            // Track for cleanup
-            negativeAckCounts[message.id] = negativeAckCounts[message.id, default: 0] + 1
             return true
         }
         
-        // Track the negative ack but don't send to DLQ yet
-        negativeAckCounts[message.id] = negativeAckCounts[message.id, default: 0] + 1
+        logger.debug("Tracking negative ack", metadata: [
+            "messageId": "\(message.id)",
+            "negativeAckCount": "\(newNegAckCount)",
+            "effectiveCount": "\(effectiveRedeliveryCount)"
+        ])
+        
         return false
     }
     
