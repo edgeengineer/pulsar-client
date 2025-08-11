@@ -293,11 +293,12 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             throw PulsarClientError.consumerBusy("Consumer not connected")
         }
         
-        // Check if message should go to DLQ
+        // Check if message should go to DLQ after this negative ack
         if let dlqHandler = dlqHandler,
-           await dlqHandler.shouldSendToDLQ(messageId: message.id) {
-            logger.info("Message exceeded max redelivery count, sending to DLQ", metadata: [
-                "messageId": "\(message.id)"
+           await dlqHandler.trackNegativeAck(message: message) {
+            logger.info("Message will exceed max redelivery count, sending to DLQ", metadata: [
+                "messageId": "\(message.id)",
+                "currentRedeliveryCount": "\(message.redeliveryCount)"
             ])
             
             do {

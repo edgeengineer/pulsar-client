@@ -10,8 +10,8 @@ actor DeadLetterQueueHandler<T: Sendable> {
     private let client: PulsarClient
     private let schema: Schema<T>
     
-    // Track redelivery counts for messages
-    private var redeliveryCount: [MessageId: Int] = [:]
+    // Track negative acknowledgment counts for messages
+    private var negativeAckCounts: [MessageId: Int] = [:]
     
     // DLQ and Retry producers
     private var dlqProducer: (any ProducerProtocol<T>)?
@@ -31,20 +31,27 @@ actor DeadLetterQueueHandler<T: Sendable> {
         self.schema = schema
     }
     
-    /// Check if a message should be sent to DLQ
-    func shouldSendToDLQ(messageId: MessageId) -> Bool {
-        let count = redeliveryCount[messageId, default: 0] + 1
-        redeliveryCount[messageId] = count
+    /// Track a negative acknowledgment and check if message should go to DLQ
+    func trackNegativeAck(message: Message<T>) -> Bool {
+        // The message's redeliveryCount tells us how many times it has been redelivered
+        // After this negative ack, it would be redelivered with count = current + 1
+        // If that would reach or exceed maxRedeliverCount, send to DLQ now
+        let nextRedeliveryCount = Int(message.redeliveryCount) + 1
         
-        if count >= policy.maxRedeliverCount {
-            logger.info("Message exceeded max redelivery count", metadata: [
-                "messageId": "\(messageId)",
-                "redeliveryCount": "\(count)",
+        if nextRedeliveryCount >= policy.maxRedeliverCount {
+            logger.info("Message will reach max redelivery count after this negative ack", metadata: [
+                "messageId": "\(message.id)",
+                "currentRedeliveryCount": "\(message.redeliveryCount)",
+                "nextRedeliveryCount": "\(nextRedeliveryCount)",
                 "maxRedeliverCount": "\(policy.maxRedeliverCount)"
             ])
+            // Track for cleanup
+            negativeAckCounts[message.id] = negativeAckCounts[message.id, default: 0] + 1
             return true
         }
         
+        // Track the negative ack but don't send to DLQ yet
+        negativeAckCounts[message.id] = negativeAckCounts[message.id, default: 0] + 1
         return false
     }
     
@@ -71,7 +78,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
             .withProperty("ORIGINAL_SUBSCRIPTION", subscriptionName)
             .withProperty("ORIGINAL_MESSAGE_ID", message.id.description)
             .withProperty("DLQ_TIMESTAMP", ISO8601DateFormatter().string(from: Date()))
-            .withProperty("REDELIVERY_COUNT", String(redeliveryCount[message.id] ?? 0))
+            .withProperty("REDELIVERY_COUNT", String(message.redeliveryCount))
         
         // Copy key if present
         if let key = message.key {
@@ -86,8 +93,8 @@ actor DeadLetterQueueHandler<T: Sendable> {
             "dlqMessageId": "\(dlqMessageId)"
         ])
         
-        // Clean up redelivery tracking
-        redeliveryCount.removeValue(forKey: message.id)
+        // Clean up tracking
+        negativeAckCounts.removeValue(forKey: message.id)
     }
     
     /// Send a message to the Retry Topic (if configured)
@@ -119,7 +126,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
             .withProperty("ORIGINAL_SUBSCRIPTION", subscriptionName)
             .withProperty("ORIGINAL_MESSAGE_ID", message.id.description)
             .withProperty("RETRY_TIMESTAMP", ISO8601DateFormatter().string(from: Date()))
-            .withProperty("RETRY_COUNT", String(redeliveryCount[message.id] ?? 0))
+            .withProperty("RETRY_COUNT", String(message.redeliveryCount))
         
         // Copy key if present
         if let key = message.key {
@@ -127,8 +134,8 @@ actor DeadLetterQueueHandler<T: Sendable> {
         }
         
         // Set a delay for retry (exponential backoff)
-        let retryCount = redeliveryCount[message.id] ?? 0
-        let delaySeconds = min(pow(2.0, Double(retryCount - 1)), 3600.0) // Max 1 hour
+        let retryCount = Int(message.redeliveryCount)
+        let delaySeconds = min(pow(2.0, Double(max(retryCount - 1, 0))), 3600.0) // Max 1 hour
         retryMetadata = retryMetadata.withDeliverAfter(delaySeconds)
         
         // Send to retry topic
@@ -141,27 +148,27 @@ actor DeadLetterQueueHandler<T: Sendable> {
         ])
     }
     
-    /// Clean up old redelivery count entries (to prevent memory leak)
+    /// Clean up old tracked message entries (to prevent memory leak)
     func cleanupOldEntries() {
         let cutoffCount = 10000
-        if redeliveryCount.count > cutoffCount {
+        if negativeAckCounts.count > cutoffCount {
             // Remove oldest entries
-            let toRemove = redeliveryCount.count - cutoffCount
-            let sortedKeys = redeliveryCount.keys.sorted { $0.description < $1.description }
+            let toRemove = negativeAckCounts.count - cutoffCount
+            let sortedIds = negativeAckCounts.keys.sorted { $0.description < $1.description }
             for i in 0..<toRemove {
-                redeliveryCount.removeValue(forKey: sortedKeys[i])
+                negativeAckCounts.removeValue(forKey: sortedIds[i])
             }
             
-            logger.debug("Cleaned up old redelivery count entries", metadata: [
+            logger.debug("Cleaned up old tracked entries", metadata: [
                 "removed": "\(toRemove)",
-                "remaining": "\(redeliveryCount.count)"
+                "remaining": "\(negativeAckCounts.count)"
             ])
         }
     }
     
-    /// Reset redelivery count for a message (e.g., after successful processing)
+    /// Reset tracking for a message (e.g., after successful processing)
     func resetRedeliveryCount(for messageId: MessageId) {
-        redeliveryCount.removeValue(forKey: messageId)
+        negativeAckCounts.removeValue(forKey: messageId)
     }
     
     private func getDLQProducer() async throws -> any ProducerProtocol<T> {
@@ -218,6 +225,6 @@ actor DeadLetterQueueHandler<T: Sendable> {
         if let producer = retryProducer {
             await producer.dispose()
         }
-        redeliveryCount.removeAll()
+        negativeAckCounts.removeAll()
     }
 }
