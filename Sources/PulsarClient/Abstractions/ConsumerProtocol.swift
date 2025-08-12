@@ -14,6 +14,11 @@ where MessageType: Sendable, T == ClientState {
   /// Receive a single message
   /// - Returns: The received message
   func receive() async throws -> Message<MessageType>
+  
+  /// Receive a single message with timeout
+  /// - Parameter timeout: The timeout in seconds
+  /// - Returns: The received message
+  func receive(timeout: TimeInterval) async throws -> Message<MessageType>
 
   /// Receive a batch of messages
   /// - Parameter maxMessages: Maximum number of messages to receive

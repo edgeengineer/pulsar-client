@@ -3,12 +3,15 @@ import PulsarClient
 import Testing
 
 @Suite("Transaction Integration Tests", .serialized)
-struct TransactionIntegrationTests {
+class TransactionIntegrationTests {
     let testCase: IntegrationTestCase
     
     init() async throws {
         self.testCase = try await IntegrationTestCase()
     }
+
+     // Non-blocking cleanup to avoid CI teardown deadlocks
+    deinit { Task { [testCase] in await testCase.cleanup() } }
     
     @Test("Basic Transaction Commit", .timeLimit(.minutes(2)))
     func testBasicTransactionCommit() async throws {

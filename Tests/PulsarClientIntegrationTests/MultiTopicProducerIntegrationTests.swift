@@ -3,12 +3,15 @@ import PulsarClient
 import Testing
 
 @Suite("Multi-Topic Producer Integration Tests", .serialized)
-struct MultiTopicProducerIntegrationTests {
+class MultiTopicProducerIntegrationTests {
     let testCase: IntegrationTestCase
     
     init() async throws {
         self.testCase = try await IntegrationTestCase()
     }
+
+     // Non-blocking cleanup to avoid CI teardown deadlocks
+    deinit { Task { [testCase] in await testCase.cleanup() } }
     
     @Test("Multi-Topic Producer Basic Functionality", .timeLimit(.minutes(2)))
     func testMultiTopicProducerBasic() async throws {

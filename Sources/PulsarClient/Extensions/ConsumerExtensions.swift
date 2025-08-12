@@ -75,26 +75,6 @@ extension ConsumerProtocol {
     }
   }
 
-  /// Receive messages with a timeout
-  public func receive(timeout: TimeInterval) async throws -> Message<MessageType> {
-    try await withThrowingTaskGroup(of: Message<MessageType>.self) { group in
-      // Add receive task
-      group.addTask {
-        try await self.receive()
-      }
-
-      // Add timeout task
-      group.addTask {
-        try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-        throw PulsarClientError.timeout("Receive operation timed out")
-      }
-
-      // Return first result (either message or timeout)
-      let result = try await group.next()!
-      group.cancelAll()
-      return result
-    }
-  }
 }
 
 // MARK: - State Monitoring Extensions

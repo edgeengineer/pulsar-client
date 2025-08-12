@@ -3,6 +3,12 @@ import Logging
 
 /// Actor-based handler for Dead Letter Queue operations
 actor DeadLetterQueueHandler<T: Sendable> {
+    /// Action to take after negative acknowledgment
+    enum NegativeAckAction {
+        case none
+        case retry
+        case dlq
+    }
     private let logger = Logger(label: "DeadLetterQueueHandler")
     private let policy: DeadLetterPolicy
     private let originalTopic: String
@@ -31,8 +37,8 @@ actor DeadLetterQueueHandler<T: Sendable> {
         self.schema = schema
     }
     
-    /// Track a negative acknowledgment and check if message should go to DLQ
-    func trackNegativeAck(message: Message<T>) -> Bool {
+    /// Track a negative acknowledgment and determine action
+    func trackNegativeAck(message: Message<T>) -> NegativeAckAction {
         // Track how many times we've negatively acknowledged this specific message
         let currentNegAckCount = negativeAckCounts[message.id, default: 0]
         let newNegAckCount = currentNegAckCount + 1
@@ -53,7 +59,17 @@ actor DeadLetterQueueHandler<T: Sendable> {
                 "effectiveCount": "\(nextEffectiveCount)",
                 "maxRedeliverCount": "\(policy.maxRedeliverCount)"
             ])
-            return true
+            return .dlq
+        }
+        
+        // If we have a retry topic configured and haven't reached max redeliveries, send to retry
+        if policy.retryLetterTopic != nil {
+            logger.info("Sending message to retry topic", metadata: [
+                "messageId": "\(message.id)",
+                "negativeAckCount": "\(newNegAckCount)",
+                "effectiveCount": "\(effectiveRedeliveryCount)"
+            ])
+            return .retry
         }
         
         logger.debug("Tracking negative ack", metadata: [
@@ -62,7 +78,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
             "effectiveCount": "\(effectiveRedeliveryCount)"
         ])
         
-        return false
+        return .none
     }
     
     /// Send a message to the Dead Letter Queue

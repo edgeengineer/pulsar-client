@@ -3,12 +3,15 @@ import PulsarClient
 import Testing
 
 @Suite("Interceptor Integration Tests", .serialized)
-struct InterceptorIntegrationTests {
+class InterceptorIntegrationTests {
     let testCase: IntegrationTestCase
     
     init() async throws {
         self.testCase = try await IntegrationTestCase()
     }
+
+    // Non-blocking cleanup to avoid CI teardown deadlocks
+    deinit { Task { [testCase] in await testCase.cleanup() } }
     
     // Test Producer Interceptor
     actor TestProducerInterceptor: ProducerInterceptor {

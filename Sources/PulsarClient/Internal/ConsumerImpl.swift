@@ -187,6 +187,39 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         true  // Conservative approach for nonisolated access
     }
     
+    /// Receive a message with timeout
+    public func receive(timeout: TimeInterval) async throws -> Message<T> {
+        guard _state == .connected else {
+            throw PulsarClientError.consumerBusy("Consumer not connected")
+        }
+        
+        let endTime = Date().addingTimeInterval(timeout)
+        
+        // Poll for messages with short intervals
+        while Date() < endTime {
+            // Check if message is available
+            if var message = await messageQueue.tryReceive() {
+                // Process through interceptors if configured
+                if let interceptors = interceptors {
+                    message = try await interceptors.beforeConsume(consumer: self, message: message)
+                }
+                
+                // Flow control: request more messages if needed
+                // Note: permits are already decremented in handleIncomingMessage
+                if permits <= configuration.receiverQueueSize / 4 {
+                    await requestMoreMessages()
+                }
+                
+                return message
+            }
+            
+            // Short sleep to avoid busy waiting
+            try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        }
+        
+        throw PulsarClientError.timeout("Receive operation timed out after \(timeout) seconds")
+    }
+    
     public func receive() async throws -> Message<T> {
         guard _state == .connected else {
             throw PulsarClientError.consumerBusy("Consumer not connected")
@@ -293,31 +326,64 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             throw PulsarClientError.consumerBusy("Consumer not connected")
         }
         
-        // Check if message should go to DLQ after this negative ack
-        if let dlqHandler = dlqHandler,
-           await dlqHandler.trackNegativeAck(message: message) {
-            logger.info("Message will exceed max redelivery count, sending to DLQ", metadata: [
-                "messageId": "\(message.id)",
-                "currentRedeliveryCount": "\(message.redeliveryCount)"
-            ])
+        // Check if message should go to DLQ or retry topic after this negative ack
+        if let dlqHandler = dlqHandler {
+            let action = await dlqHandler.trackNegativeAck(message: message)
             
-            do {
-                // Send to retry topic or DLQ
-                try await dlqHandler.sendToRetryTopic(message)
-                
-                // Acknowledge the original message after successful DLQ send
-                try await acknowledge(message)
-                
-                // Clean up DLQ tracking periodically
-                await dlqHandler.cleanupOldEntries()
-                
-                return
-            } catch {
-                logger.error("Failed to send message to DLQ", metadata: [
+            switch action {
+            case .dlq:
+                logger.info("Message will exceed max redelivery count, sending to DLQ", metadata: [
                     "messageId": "\(message.id)",
-                    "error": "\(error)"
+                    "currentRedeliveryCount": "\(message.redeliveryCount)"
                 ])
-                // Fall through to normal negative acknowledgment
+                
+                do {
+                    // Send to DLQ
+                    try await dlqHandler.sendToDLQ(message)
+                    
+                    // Acknowledge the original message after successful DLQ send
+                    try await acknowledge(message)
+                    
+                    // Clean up old entries periodically
+                    await dlqHandler.cleanupOldEntries()
+                    
+                    return
+                } catch {
+                    logger.error("Failed to send message to DLQ", metadata: [
+                        "messageId": "\(message.id)",
+                        "error": "\(error)"
+                    ])
+                    // Fall through to normal negative acknowledgment
+                }
+                
+            case .retry:
+                logger.info("Sending message to retry topic", metadata: [
+                    "messageId": "\(message.id)",
+                    "currentRedeliveryCount": "\(message.redeliveryCount)"
+                ])
+                
+                do {
+                    // Send to retry topic
+                    try await dlqHandler.sendToRetryTopic(message)
+                    
+                    // Acknowledge the original message after successful retry send
+                    try await acknowledge(message)
+                    
+                    // Clean up old entries periodically
+                    await dlqHandler.cleanupOldEntries()
+                    
+                    return
+                } catch {
+                    logger.error("Failed to send message to retry topic", metadata: [
+                        "messageId": "\(message.id)",
+                        "error": "\(error)"
+                    ])
+                    // Fall through to normal negative acknowledgment
+                }
+                
+            case .none:
+                // Continue with normal negative acknowledgment
+                break
             }
         }
         
@@ -675,6 +741,23 @@ private actor AsyncChannel<T: Sendable> {
     
     func getBufferedCount() -> Int {
         return buffer.count
+    }
+    
+    /// Try to receive a message without blocking
+    func tryReceive() -> T? {
+        if let value = buffer.first {
+            buffer.removeFirst()
+            
+            // Notify any waiting senders that space is available
+            if let spaceWaiter = spaceWaiters.first {
+                spaceWaiters.removeFirst()
+                spaceWaiter.resume()
+            }
+            
+            return value
+        }
+        
+        return nil
     }
     
     private func waitForSpace() async {
