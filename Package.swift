@@ -24,7 +24,10 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.32.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0"),
-        .package(url: "https://github.com/edgeengineer/cyclic-redundancy-check.git", from: "0.0.5")
+        .package(url: "https://github.com/edgeengineer/cyclic-redundancy-check.git", from: "0.0.5"),
+        .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
+        .package(url: "https://github.com/apple/swift-metrics.git", from: "2.5.0"),
+        .package(url: "https://github.com/apple/swift-distributed-tracing.git", from: "1.1.3")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -38,7 +41,10 @@ let package = Package(
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "CyclicRedundancyCheck", package: "cyclic-redundancy-check")
+                .product(name: "CyclicRedundancyCheck", package: "cyclic-redundancy-check"),
+                .product(name: "Atomics", package: "swift-atomics"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Tracing", package: "swift-distributed-tracing")
             ],
             exclude: ["Proto/PulsarApi.proto"]
         ),
