@@ -330,7 +330,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     updateState(.closed)
-    logger.info("Producer closed", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Producer closed", metadata: ["producerName": "\(producerName)"])
   }
 
   // MARK: - Private Methods
@@ -391,7 +391,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
   private func runMessageDispatcher() async {
-    logger.info("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
 
     while !Task.isCancelled && _state == .connected {
       do {
@@ -415,7 +415,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       }
     }
 
-    logger.info("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
   }
 
   /// Process a single send operation (like C# channel.Send)
@@ -458,7 +458,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       await channel.registerSendOperation(sendOp)
 
       // Send the frame
-      logger.info("Sending frame for sequence \(sendOp.sequenceId)")
+      logger.trace("Sending frame for sequence", metadata: ["sequenceId": "\(sendOp.sequenceId)"])
       try await connection.sendCommand(frame)
 
       // The receipt will be handled by the channel when it arrives
@@ -481,7 +481,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
       } catch {
         if !Task.isCancelled {
-      logger.warning("Batch sender error", metadata: ["error": "\(error)"])
+      logger.debug("Batch sender error", metadata: ["error": "\(error)"])
         }
       }
     }
@@ -574,7 +574,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         finalPayload = try compressData(batchedPayload, type: configuration.compressionType)
         metadata.compression = configuration.compressionType.toProto()
       } catch {
-        logger.warning("Failed to compress batch, sending uncompressed: \(error)")
+        logger.debug("Failed to compress batch, sending uncompressed", metadata: ["error": "\(error)"])
         finalPayload = batchedPayload
       }
     } else {
@@ -625,7 +625,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Handle producer error with fault tolerance
   func handleError(_ error: Error) async {
-    logger.warning("Producer \(producerName) error: \(error)")
+    logger.debug("Producer error", metadata: ["producerName": "\(producerName)", "error": "\(error)"])
 
     var exceptionContext = ExceptionContext(
       exception: error,
@@ -646,7 +646,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
     case .rethrow:
       // Keep current state, might recover later
-      logger.warning(
+      logger.debug(
         "Producer keeping current state after error",
         metadata: ["producerName": "\(producerName)", "error": "\(error)"]
       )
@@ -667,7 +667,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // Re-establish producer if needed
       // The channel manager should handle producer re-creation
       updateState(.connected)
-      logger.info("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
+      logger.debug("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
 
     } catch {
       logger.error(

@@ -35,14 +35,14 @@ actor TransactionImpl: Transaction {
         }
         
         _state = .committing
-        logger.info("Committing transaction", metadata: [
+        logger.debug("Committing transaction", metadata: [
             "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)"
         ])
         
         do {
             try await coordinator.commitTransaction(txnID)
             _state = .committed
-            logger.info("Transaction committed successfully", metadata: [
+            logger.debug("Transaction committed successfully", metadata: [
                 "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)"
             ])
         } catch {
@@ -63,14 +63,14 @@ actor TransactionImpl: Transaction {
         }
         
         _state = .aborting
-        logger.info("Aborting transaction", metadata: [
+        logger.debug("Aborting transaction", metadata: [
             "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)"
         ])
         
         do {
             try await coordinator.abortTransaction(txnID)
             _state = .aborted
-            logger.info("Transaction aborted successfully", metadata: [
+            logger.debug("Transaction aborted successfully", metadata: [
                 "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)"
             ])
         } catch {
@@ -87,7 +87,7 @@ actor TransactionImpl: Transaction {
         let elapsed = Date().timeIntervalSince(createdAt)
         if elapsed >= timeout && _state == .open {
             _state = .timeout
-            logger.warning("Transaction timed out", metadata: [
+            logger.debug("Transaction timed out", metadata: [
                 "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)",
                 "timeout": "\(timeout)s"
             ])

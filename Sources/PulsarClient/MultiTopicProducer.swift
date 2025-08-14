@@ -145,7 +145,7 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
             _state = .connected
             stateContinuation.yield(.connected)
             
-            logger.info("Multi-topic producer initialized", metadata: [
+            logger.debug("Multi-topic producer initialized", metadata: [
                 "topics": "\(topics)",
                 "count": "\(topics.count)"
             ])
@@ -198,7 +198,7 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
         let producer = try await createProducer(for: topic)
         producers[topic] = producer
         
-        logger.info("Created producer for topic", metadata: [
+        logger.debug("Created producer for topic", metadata: [
             "topic": "\(topic)"
         ])
         
@@ -297,7 +297,7 @@ public actor MultiTopicProducer<T: Sendable>: ProducerProtocol {
         stateContinuation.yield(.closed)
         stateContinuation.finish()
         
-        logger.info("Multi-topic producer disposed")
+        logger.debug("Multi-topic producer disposed")
     }
     
     // MARK: - StateHolder

@@ -65,7 +65,7 @@ actor TransactionCoordinatorClient: TransactionCoordinator {
             leastSigBits: txnResponse.txnidLeastBits
         )
         
-        logger.info("Created new transaction", metadata: [
+        logger.debug("Created new transaction", metadata: [
             "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)"
         ])
         
@@ -145,7 +145,7 @@ actor TransactionCoordinatorClient: TransactionCoordinator {
             throw mapServerError(endTxnResponse.error, endTxnResponse.message)
         }
         
-        logger.info("Transaction ended successfully", metadata: [
+        logger.debug("Transaction ended successfully", metadata: [
             "txnID": "\(txnID.mostSigBits):\(txnID.leastSigBits)",
             "action": "\(action)"
         ])

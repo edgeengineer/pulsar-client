@@ -332,7 +332,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             
             switch action {
             case .dlq:
-                logger.info("Message will exceed max redelivery count, sending to DLQ", metadata: [
+                logger.debug("Message will exceed max redelivery count, sending to DLQ", metadata: [
                     "messageId": "\(message.id)",
                     "currentRedeliveryCount": "\(message.redeliveryCount)"
                 ])
@@ -357,7 +357,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
                 }
                 
             case .retry:
-                logger.info("Sending message to retry topic", metadata: [
+                logger.debug("Sending message to retry topic", metadata: [
                     "messageId": "\(message.id)",
                     "currentRedeliveryCount": "\(message.redeliveryCount)"
                 ])
@@ -422,7 +422,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         
         // Seek expects a success response
         let _ = try await connection.sendRequest(frame, responseType: SuccessResponse.self)
-        logger.info("Seeked to message \(messageId)")
+        logger.debug("Seeked to message", metadata: ["messageId": "\(messageId)"])
     }
     
     public func seek(to timestamp: Date) async throws {
@@ -435,7 +435,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         
         // Seek expects a success response
         let _ = try await connection.sendRequest(frame, responseType: SuccessResponse.self)
-        logger.info("Seeked to timestamp \(timestamp)")
+        logger.debug("Seeked to timestamp", metadata: ["timestamp": "\(timestamp)"])
     }
     
     public func unsubscribe() async throws {
@@ -448,7 +448,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         
         // Unsubscribe expects a success response
         let _ = try await connection.sendRequest(frame, responseType: SuccessResponse.self)
-        logger.info("Unsubscribed from \(subscription)")
+        logger.debug("Unsubscribed from subscription", metadata: ["subscription": "\(subscription)"])
     }
     
     public func getBufferedMessageCount() async -> Int {
@@ -497,7 +497,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         }
         
         updateState(.closed)
-        logger.info("Consumer closed for subscription \(subscription)")
+        logger.debug("Consumer closed for subscription", metadata: ["subscription": "\(subscription)"])
     }
     
     // MARK: - Internal Methods
@@ -505,7 +505,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     /// Handle incoming message from broker
     /// Note: In Pulsar protocol, the actual message payload comes separately from the CommandMessage
     func handleIncomingMessage(_ commandMessage: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata) async {
-        logger.info("Consumer \(id) received message: ledger=\(commandMessage.messageID.ledgerID), entry=\(commandMessage.messageID.entryID)")
+        logger.trace("Consumer received message", metadata: ["consumerId": "\(id)", "ledgerId": "\(commandMessage.messageID.ledgerID)", "entryId": "\(commandMessage.messageID.entryID)"])
         
         do {
             // Decode message payload
@@ -598,7 +598,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         if isFirstFlow {
             // First FLOW command: request full receiver queue size (like C# client)
             permitsToRequest = configuration.receiverQueueSize
-            logger.info("Consumer \(id) sending FIRST FLOW command for \(permitsToRequest) permits")
+            logger.debug("Consumer sending FIRST FLOW command", metadata: ["consumerId": "\(id)", "permits": "\(permitsToRequest)"])
             isFirstFlow = false
         } else {
             // Subsequent FLOW commands: only request what we need (like C# client)
@@ -608,7 +608,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
                 return
             }
             permitsToRequest = needed
-            logger.info("Consumer \(id) requesting \(permitsToRequest) additional permits (current: \(permits))")
+            logger.trace("Consumer requesting additional permits", metadata: ["consumerId": "\(id)", "requestedPermits": "\(permitsToRequest)", "currentPermits": "\(permits)"])
         }
         
         let flowCommand = await connection.commandBuilder.flow(
@@ -620,18 +620,18 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         do {
             try await connection.sendCommand(frame)
             permits += permitsToRequest
-            logger.info("Successfully sent FLOW command for \(permitsToRequest) permits, total permits now: \(permits)")
+            logger.trace("Successfully sent FLOW command", metadata: ["requestedPermits": "\(permitsToRequest)", "totalPermits": "\(permits)"])
         } catch {
-            logger.warning("Failed to request more messages: \(error)")
+            logger.debug("Failed to request more messages", metadata: ["error": "\(error)"])
         }
     }
     
     private func runReceiver() async {
-        logger.info("Consumer \(id) receiver task started")
+        logger.debug("Consumer receiver task started", metadata: ["consumerId": "\(id)"])
         
         // Send initial FLOW command to start receiving messages
         await requestMoreMessages()
-        logger.info("Consumer \(id) sent initial FLOW command with \(permits) permits")
+        logger.debug("Consumer sent initial FLOW command", metadata: ["consumerId": "\(id)", "permits": "\(permits)"])
         
         // Keep the receiver task alive to handle ongoing operations
         // The actual message receiving is handled by handleIncomingMessage
@@ -647,13 +647,13 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
                 }
             } catch {
                 if !Task.isCancelled {
-                    logger.warning("Consumer receiver error: \(error)")
+                    logger.debug("Consumer receiver error", metadata: ["error": "\(error)"])
                 }
                 break
             }
         }
         
-        logger.info("Consumer \(id) receiver task stopped")
+        logger.debug("Consumer receiver task stopped", metadata: ["consumerId": "\(id)"])
     }
     
     private func determineTopicName(from commandMessage: Pulsar_Proto_CommandMessage, metadata: Pulsar_Proto_MessageMetadata) -> String {
