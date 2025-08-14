@@ -40,7 +40,6 @@ class ConsumerIntegrationTests {
           .subscriptionType(.exclusive)
       }
     }
-
     await exclusiveConsumer.dispose()
 
     // Test Shared subscription

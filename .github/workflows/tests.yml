@@ -200,7 +200,7 @@ jobs:
       timeout-minutes: 20
       run: |
         set -o pipefail
-        swift test --filter PulsarClientIntegrationTests 2>&1 | tee integration-tests-${{ matrix.name }}.log
+        swift test --filter PulsarClientIntegrationTests --no-parallel 2>&1 | tee integration-tests-${{ matrix.name }}.log
         status=${PIPESTATUS[0]}
         echo "==== Swift Test Failure Summary (${{ matrix.name }}) ===="
         grep -En "error:|Assertion failed|Expectation failed|Test Case '-.*' failed|Failing tests|timeout|fatal error|segmentation" integration-tests-${{ matrix.name }}.log || true

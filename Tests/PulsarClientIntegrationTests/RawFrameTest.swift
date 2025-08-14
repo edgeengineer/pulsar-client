@@ -19,7 +19,6 @@ class RawFrameTest {
     guard let client = await testCase.client else {
       throw IntegrationTestError.clientNotInitialized
     }
-
     let topic = "persistent://public/default/test-raw-frame-\(UUID().uuidString)"
 
     // Create producer

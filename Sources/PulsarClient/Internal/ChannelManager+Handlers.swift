@@ -10,7 +10,7 @@ extension ChannelManager {
     _ message: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata
   ) async {
     guard let consumerChannel = consumers[message.consumerID] else {
-      logger.warning("Received message for unknown consumer \(message.consumerID)")
+      logger.debug("Received message for unknown consumer", metadata: ["consumerId": "\(message.consumerID)"])
       return
     }
 
@@ -21,7 +21,7 @@ extension ChannelManager {
   /// Handle active consumer change
   func handleActiveConsumerChange(_ change: Pulsar_Proto_CommandActiveConsumerChange) async {
     guard let consumer = consumers[change.consumerID] else {
-      logger.warning("Received active consumer change for unknown consumer \(change.consumerID)")
+      logger.debug("Received active consumer change for unknown consumer", metadata: ["consumerId": "\(change.consumerID)"])
       return
     }
 
@@ -31,11 +31,11 @@ extension ChannelManager {
   /// Handle close producer command from broker
   func handleCloseProducer(_ close: Pulsar_Proto_CommandCloseProducer) async {
     guard let producer = producers[close.producerID] else {
-      logger.warning("Received close for unknown producer \(close.producerID)")
+      logger.debug("Received close for unknown producer", metadata: ["producerId": "\(close.producerID)"])
       return
     }
 
-    logger.info("Broker requested to close producer \(close.producerID)")
+    logger.debug("Broker requested to close producer", metadata: ["producerId": "\(close.producerID)"])
     await producer.close()
     removeProducer(id: close.producerID)
   }
@@ -43,18 +43,18 @@ extension ChannelManager {
   /// Handle close consumer command from broker
   func handleCloseConsumer(_ close: Pulsar_Proto_CommandCloseConsumer) async {
     guard let consumer = consumers[close.consumerID] else {
-      logger.warning("Received close for unknown consumer \(close.consumerID)")
+      logger.debug("Received close for unknown consumer", metadata: ["consumerId": "\(close.consumerID)"])
       return
     }
 
-    logger.info("Broker requested to close consumer \(close.consumerID)")
+    logger.debug("Broker requested to close consumer", metadata: ["consumerId": "\(close.consumerID)"])
     await consumer.close()
     removeConsumer(id: close.consumerID)
   }
 
   /// Reconnect all channels after connection recovery
   func reconnectAll() async {
-    logger.info("Reconnecting all channels")
+    logger.debug("Reconnecting all channels")
 
     // Reconnect all producers
     await withTaskGroup(of: Void.self) { group in
@@ -85,7 +85,7 @@ extension ProducerChannel {
     guard state == .active else { return }
 
     guard let connection = connection else {
-      logger.warning("Cannot reconnect producer \(id) - no connection available")
+      logger.debug("Cannot reconnect producer - no connection available", metadata: ["producerId": "\(id)"])
       return
     }
 
@@ -101,7 +101,7 @@ extension ProducerChannel {
       let frame = PulsarFrame(command: command)
       let _ = try await connection.sendRequest(frame, responseType: ProducerSuccessResponse.self)
 
-      logger.info("Successfully reconnected producer \(id) for topic \(topic)")
+      logger.debug("Successfully reconnected producer", metadata: ["producerId": "\(id)", "topic": "\(topic)"])
     } catch {
       logger.error("Failed to reconnect producer \(id): \(error)")
       updateState(.closed)
@@ -137,7 +137,7 @@ extension ConsumerChannel {
     _ message: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata
   ) async {
     guard state == .active else {
-      logger.warning("Received message for inactive consumer \(id)")
+      logger.debug("Received message for inactive consumer", metadata: ["consumerId": "\(id)"])
       return
     }
 
@@ -145,14 +145,14 @@ extension ConsumerChannel {
     if let handler = messageHandler {
       await handler(message, payload, metadata)
     } else {
-      logger.warning("No message handler set for consumer \(id)")
+      logger.debug("No message handler set for consumer", metadata: ["consumerId": "\(id)"])
     }
   }
 
   /// Handle active consumer change
   func handleActiveConsumerChange(_ isActive: Bool) async {
     Self.messageStates[id, default: MessageState()].isActive = isActive
-    logger.info("Consumer \(id) active state changed to \(isActive)")
+    logger.debug("Consumer active state changed", metadata: ["consumerId": "\(id)", "isActive": "\(isActive)"])
   }
 
   /// Reconnect the consumer
@@ -160,7 +160,7 @@ extension ConsumerChannel {
     guard state == .active else { return }
 
     guard let connection = connection else {
-      logger.warning("Cannot reconnect consumer \(id) - no connection available")
+      logger.debug("Cannot reconnect consumer - no connection available", metadata: ["consumerId": "\(id)"])
       return
     }
 
@@ -180,8 +180,8 @@ extension ConsumerChannel {
       let frame = PulsarFrame(command: command)
       let _ = try await connection.sendRequest(frame, responseType: SuccessResponse.self)
 
-      logger.info(
-        "Successfully reconnected consumer \(id) for topic \(topic), subscription \(subscription)")
+      logger.debug(
+        "Successfully reconnected consumer", metadata: ["consumerId": "\(id)", "topic": "\(topic)", "subscription": "\(subscription)"])
     } catch {
       logger.error("Failed to reconnect consumer \(id): \(error)")
       updateState(.closed)

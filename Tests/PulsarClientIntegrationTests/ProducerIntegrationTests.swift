@@ -69,7 +69,6 @@ class ProducerIntegrationTests {
     let sendTasks = messages.map { msg in
       Task { try await producer.send(msg) }
     }
-
     let messageIds = try await withThrowingTaskGroup(of: MessageId.self) { group in
       for task in sendTasks {
         group.addTask { try await task.value }

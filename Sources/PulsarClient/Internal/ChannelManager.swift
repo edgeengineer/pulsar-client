@@ -74,8 +74,8 @@ actor ProducerChannel: PulsarChannel {
       // Complete the operation
       wrapper.complete(with: messageId)
     } else {
-      logger.warning(
-        "Received send receipt for unknown sequence ID \(receipt.sequenceID), pending: \(pendingSends.keys.sorted())"
+      logger.debug(
+        "Received send receipt for unknown sequence ID", metadata: ["sequenceId": "\(receipt.sequenceID)", "pendingSequences": "\(pendingSends.keys.sorted())"]
       )
     }
   }

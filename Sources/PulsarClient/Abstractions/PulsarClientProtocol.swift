@@ -2,44 +2,60 @@ import Foundation
 
 /// The main client interface for Apache Pulsar
 public protocol PulsarClientProtocol: Sendable {
-  /// Create a new producer
-  /// - Parameters:
-  ///   - topic: The topic to produce messages to
-  ///   - schema: The schema for message serialization
-  ///   - configure: Configuration closure for the producer
-  /// - Returns: A configured producer instance
-  func newProducer<T>(
-    topic: String,
-    schema: Schema<T>,
-    configure: (ProducerBuilder<T>) -> Void
-  ) async throws -> any ProducerProtocol<T> where T: Sendable
-
-  /// Create a new consumer
-  /// - Parameters:
-  ///   - topic: The topic(s) to consume messages from
-  ///   - schema: The schema for message deserialization
-  ///   - configure: Configuration closure for the consumer
-  /// - Returns: A configured consumer instance
-  func newConsumer<T>(
-    topic: String,
-    schema: Schema<T>,
-    configure: (ConsumerBuilder<T>) -> Void
-  ) async throws -> any ConsumerProtocol<T> where T: Sendable
-
-  /// Create a new reader
-  /// - Parameters:
-  ///   - topic: The topic to read messages from
-  ///   - schema: The schema for message deserialization
-  ///   - configure: Configuration closure for the reader
-  /// - Returns: A configured reader instance
-  func newReader<T>(
-    topic: String,
-    schema: Schema<T>,
-    configure: (ReaderBuilder<T>) -> Void
-  ) async throws -> any ReaderProtocol<T> where T: Sendable
-
-  /// Dispose of the client and all its resources
-  func dispose() async
+    /// Create a new producer
+    /// - Parameters:
+    ///   - topic: The topic to produce messages to
+    ///   - schema: The schema for message serialization
+    ///   - configure: Configuration closure for the producer
+    /// - Returns: A configured producer instance
+    func newProducer<T>(
+        topic: String,
+        schema: Schema<T>,
+        configure: (ProducerBuilder<T>) -> Void
+    ) async throws -> any ProducerProtocol<T> where T: Sendable
+    
+    /// Create a new consumer
+    /// - Parameters:
+    ///   - topic: The topic(s) to consume messages from
+    ///   - schema: The schema for message deserialization
+    ///   - configure: Configuration closure for the consumer
+    /// - Returns: A configured consumer instance
+    func newConsumer<T>(
+        topic: String,
+        schema: Schema<T>,
+        configure: (ConsumerBuilder<T>) -> Void
+    ) async throws -> any ConsumerProtocol<T> where T: Sendable
+    
+    /// Create a new reader
+    /// - Parameters:
+    ///   - topic: The topic to read messages from
+    ///   - schema: The schema for message deserialization
+    ///   - configure: Configuration closure for the reader
+    /// - Returns: A configured reader instance
+    func newReader<T>(
+        topic: String,
+        schema: Schema<T>,
+        configure: (ReaderBuilder<T>) -> Void
+    ) async throws -> any ReaderProtocol<T> where T: Sendable
+    
+    /// Create a new transaction
+    /// - Returns: A transaction builder for configuring the transaction
+    func newTransaction() -> TransactionBuilder
+    
+    /// Create a new multi-topic producer
+    /// - Parameters:
+    ///   - topics: The topics to produce messages to
+    ///   - schema: The schema for message serialization
+    ///   - configure: Configuration closure for the producer
+    /// - Returns: A configured multi-topic producer instance
+    func newMultiTopicProducer<T>(
+        topics: [String],
+        schema: Schema<T>,
+        configure: (MultiTopicProducerBuilder<T>) -> Void
+    ) async throws -> MultiTopicProducer<T> where T: Sendable
+    
+    /// Dispose of the client and all its resources
+    func dispose() async
 }
 
 /// Client state
