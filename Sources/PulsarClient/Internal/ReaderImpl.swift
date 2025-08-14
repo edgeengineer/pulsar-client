@@ -209,7 +209,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
       return hasMoreMessages
 
     } catch {
-      logger.warning("Failed to check broker-side message availability: \(error)")
+      logger.debug("Failed to check broker-side message availability", metadata: ["error": "\(error)"])
       // Fall back to conservative approach - assume no messages available
       return false
     }
@@ -221,7 +221,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
     }
 
     try await consumer.seek(to: messageId)
-    logger.info("Reader seeked to message \(messageId)")
+    logger.debug("Reader seeked to message", metadata: ["messageId": "\(messageId)"])
   }
 
   public func seek(to timestamp: Date) async throws {
@@ -230,7 +230,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
     }
 
     try await consumer.seek(to: timestamp)
-    logger.info("Reader seeked to timestamp \(timestamp)")
+    logger.debug("Reader seeked to timestamp", metadata: ["timestamp": "\(timestamp)"])
   }
 
   public func dispose() async {
@@ -241,7 +241,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
     await consumer.dispose()
 
     updateState(.closed)
-    logger.info("Reader closed for topic \(topic)")
+    logger.debug("Reader closed for topic", metadata: ["topic": "\(topic)"])
   }
 
   // MARK: - Private Methods
@@ -300,7 +300,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
   private func monitorConsumerState() async {
     // Monitor the underlying consumer's state and propagate changes to reader state
     guard let consumerImpl = consumer as? ConsumerImpl<T> else {
-      logger.warning("Consumer doesn't support state monitoring")
+      logger.debug("Consumer doesn't support state monitoring")
       return
     }
 

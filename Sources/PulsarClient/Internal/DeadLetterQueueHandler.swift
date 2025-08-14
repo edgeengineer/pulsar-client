@@ -52,7 +52,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
         let nextEffectiveCount = effectiveRedeliveryCount + 1
         
         if nextEffectiveCount >= policy.maxRedeliverCount {
-            logger.info("Message will reach max redelivery count after this negative ack", metadata: [
+            logger.debug("Message will reach max redelivery count after this negative ack", metadata: [
                 "messageId": "\(message.id)",
                 "brokerRedeliveryCount": "\(message.redeliveryCount)",
                 "negativeAckCount": "\(newNegAckCount)",
@@ -64,7 +64,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
         
         // If we have a retry topic configured and haven't reached max redeliveries, send to retry
         if policy.retryLetterTopic != nil {
-            logger.info("Sending message to retry topic", metadata: [
+            logger.debug("Sending message to retry topic", metadata: [
                 "messageId": "\(message.id)",
                 "negativeAckCount": "\(newNegAckCount)",
                 "effectiveCount": "\(effectiveRedeliveryCount)"
@@ -85,7 +85,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
     func sendToDLQ(_ message: Message<T>) async throws {
         let dlqProducer = try await getDLQProducer()
         
-        logger.info("Sending message to DLQ", metadata: [
+        logger.debug("Sending message to DLQ", metadata: [
             "originalMessageId": "\(message.id)",
             "dlqTopic": "\(dlqProducer.topic)"
         ])
@@ -114,7 +114,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
         // Send to DLQ
         let dlqMessageId = try await dlqProducer.send(message.value, metadata: dlqMetadata)
         
-        logger.info("Message sent to DLQ successfully", metadata: [
+        logger.debug("Message sent to DLQ successfully", metadata: [
             "originalMessageId": "\(message.id)",
             "dlqMessageId": "\(dlqMessageId)"
         ])
@@ -133,7 +133,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
         
         let retryProducer = try await getRetryProducer()
         
-        logger.info("Sending message to retry topic", metadata: [
+        logger.debug("Sending message to retry topic", metadata: [
             "originalMessageId": "\(message.id)",
             "retryTopic": "\(retryProducer.topic)"
         ])
@@ -167,7 +167,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
         // Send to retry topic
         let retryMessageId = try await retryProducer.send(message.value, metadata: retryMetadata)
         
-        logger.info("Message sent to retry topic successfully", metadata: [
+        logger.debug("Message sent to retry topic successfully", metadata: [
             "originalMessageId": "\(message.id)",
             "retryMessageId": "\(retryMessageId)",
             "delaySeconds": "\(delaySeconds)"
@@ -212,7 +212,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
             builder.producerName(producerName)
         }
         
-        logger.info("Created DLQ producer", metadata: [
+        logger.debug("Created DLQ producer", metadata: [
             "topic": "\(dlqTopic)"
         ])
         
@@ -236,7 +236,7 @@ actor DeadLetterQueueHandler<T: Sendable> {
             builder.producerName(producerName)
         }
         
-        logger.info("Created retry producer", metadata: [
+        logger.debug("Created retry producer", metadata: [
             "topic": "\(retryTopic)"
         ])
         

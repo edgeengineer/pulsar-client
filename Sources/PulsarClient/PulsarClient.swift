@@ -172,7 +172,7 @@ public final class PulsarClient: PulsarClientProtocol {
             return
         }
         
-        impl.logger.info("Disposing PulsarClient")
+        impl.logger.debug("Disposing PulsarClient")
         
         // Close all connections
         await impl.connectionPool.close()
@@ -192,7 +192,7 @@ public final class PulsarClient: PulsarClientProtocol {
             continuation.resume()
         }
         
-        impl.logger.info("PulsarClient disposed")
+        impl.logger.debug("PulsarClient disposed")
     }
     
     // MARK: - PulsarClientProtocol Implementation

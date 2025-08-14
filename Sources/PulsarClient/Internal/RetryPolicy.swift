@@ -118,8 +118,8 @@ public actor RetryExecutor {
       do {
         let result = try await operation()
         if mutableContext.attemptNumber > 1 {
-          logger.info(
-            "Operation \(mutableContext.operation) succeeded after \(mutableContext.attemptNumber) attempts"
+          logger.debug(
+            "Operation succeeded after attempts", metadata: ["operation": "\(mutableContext.operation)", "attempts": "\(mutableContext.attemptNumber)"]
           )
         }
         return result

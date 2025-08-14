@@ -77,7 +77,7 @@ extension Connection {
           logger.debug("Successfully parsed response", metadata: ["requestId": "\(requestId)"])
           return response
         }
-        logger.warning(
+        logger.debug(
           "Failed to parse response",
           metadata: [
             "expectedType": "\(Response.self)",
@@ -167,7 +167,7 @@ extension Connection {
     // Handle server-initiated commands
     switch command.type {
     case .connected:
-      logger.info("Received CONNECTED command")
+      logger.debug("Received CONNECTED command")
     // This will be handled by the background processing task
     // Since this extension is for Connection actor, we can't directly access the continuation here
 
@@ -180,7 +180,7 @@ extension Connection {
       handleMessage(command.message, frame: frame)
 
     case .sendReceipt:
-      logger.info(
+      logger.trace(
         "Handling SEND_RECEIPT",
         metadata: [
           "producerId": "\(command.sendReceipt.producerID)",
@@ -202,7 +202,7 @@ extension Connection {
       handleCloseConsumer(command.closeConsumer)
 
     case .authChallenge:
-      logger.info("Handling AUTH_CHALLENGE")
+      logger.debug("Handling AUTH_CHALLENGE")
       handleAuthChallenge(command.authChallenge)
 
     case .error:
@@ -210,18 +210,18 @@ extension Connection {
       handleError(command.error)
 
     case .lookupResponse:
-      logger.warning(
+      logger.debug(
         "Received unmatched LOOKUP_RESPONSE - this indicates a bug in request correlation")
 
     case .producerSuccess:
-      logger.warning(
+      logger.debug(
         "Received unmatched PRODUCER_SUCCESS - this indicates a bug in request correlation")
 
     case .success:
-      logger.warning("Received unmatched SUCCESS - this indicates a bug in request correlation")
+      logger.debug("Received unmatched SUCCESS - this indicates a bug in request correlation")
 
     default:
-      logger.warning("Unhandled command type", metadata: ["type": "\(command.type)"])
+      logger.debug("Unhandled command type", metadata: ["type": "\(command.type)"])
     }
   }
 
@@ -309,7 +309,7 @@ extension Connection {
   private func handleMessage(_ message: Pulsar_Proto_CommandMessage, frame: PulsarFrame) {
     Task {
       guard let metadata = frame.metadata, let payload = frame.payload else {
-        logger.warning("Received message without metadata or payload")
+        logger.debug("Received message without metadata or payload")
         return
       }
 
@@ -318,17 +318,17 @@ extension Connection {
   }
 
   private func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
-    logger.info(
-      "Received SendReceipt - producerID: \(receipt.producerID), sequenceID: \(receipt.sequenceID)")
+    logger.trace(
+      "Received SendReceipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"])
     Task {
       // Forward to the producer channel
       if let producerChannel = await channelManager?.getProducer(id: receipt.producerID) {
-        logger.info(
-          "Found producer channel \(receipt.producerID), forwarding receipt for sequence \(receipt.sequenceID)"
+        logger.trace(
+          "Found producer channel, forwarding receipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"]
         )
         await producerChannel.handleSendReceipt(receipt)
       } else {
-        logger.warning("Received send receipt for unknown producer \(receipt.producerID)")
+        logger.debug("Received send receipt for unknown producer", metadata: ["producerId": "\(receipt.producerID)"])
       }
     }
   }
@@ -374,7 +374,7 @@ extension Connection {
           return
         }
 
-        logger.info("Responding to authentication challenge")
+        logger.debug("Responding to authentication challenge")
 
         // Get response data from authentication provider
         let responseData = try await auth.handleAuthenticationChallenge(challenge)
@@ -389,7 +389,7 @@ extension Connection {
         let frame = PulsarFrame(command: authResponse)
 
         try await sendFrame(frame)
-        logger.info("Sent authentication response")
+        logger.debug("Sent authentication response")
 
       } catch {
         logger.error("Failed to handle auth challenge: \(error)")
@@ -541,11 +541,11 @@ public struct GetLastMessageIdResponse: ResponseCommand {
 extension Connection {
   /// Perform broker lookup for topic
   func lookup(topic: String) async throws -> LookupResponse {
-    logger.info("Starting lookup for topic: \(topic)")
+    logger.trace("Starting lookup for topic", metadata: ["topic": "\(topic)"])
 
     // Check connection state first
     let currentState = state
-    logger.info("Connection state before lookup: \(currentState)")
+    logger.trace("Connection state before lookup", metadata: ["state": "\(currentState)"])
 
     guard currentState == .connected else {
       logger.error("Cannot perform lookup: connection not in connected state: \(currentState)")
@@ -555,13 +555,13 @@ extension Connection {
     let command = commandBuilder.lookup(topic: topic)
     let frame = PulsarFrame(command: command)
 
-    logger.info(
-      "Sending lookup command for topic: \(topic) with request ID: \(command.lookupTopic.requestID)"
+    logger.trace(
+      "Sending lookup command", metadata: ["topic": "\(topic)", "requestId": "\(command.lookupTopic.requestID)"]
     )
 
     let response = try await sendRequest(frame, responseType: LookupResponse.self)
 
-    logger.info("Received lookup response for topic: \(topic)")
+    logger.trace("Received lookup response", metadata: ["topic": "\(topic)"])
     return response
   }
 
@@ -660,7 +660,7 @@ extension Connection {
 
   /// Reconnect to the broker with fault tolerance
   func reconnect() async throws {
-    logger.info("Starting connection reconnection")
+    logger.debug("Starting connection reconnection")
 
     // Update state to reconnecting
     updateState(.reconnecting)
@@ -679,7 +679,7 @@ extension Connection {
       // Re-establish all channels
       await self.channelManager?.reconnectAll()
 
-      self.logger.info("Connection reconnection completed successfully")
+      self.logger.debug("Connection reconnection completed successfully")
     }
   }
 
@@ -735,7 +735,7 @@ extension Connection {
       try await sendFrame(frame)
       logger.trace("Health check ping sent successfully")
     } catch {
-      logger.warning("Health check ping failed: \(error)")
+      logger.debug("Health check ping failed", metadata: ["error": "\(error)"])
       // Connection might be dead, trigger reconnection
       updateState(.faulted(error))
     }
@@ -766,7 +766,7 @@ extension Connection {
 
     case .rethrow:
       // Keep faulted state, might recover later
-      logger.warning("Keeping connection in faulted state: \(error)")
+      logger.debug("Keeping connection in faulted state", metadata: ["error": "\(error)"])
     }
   }
 
