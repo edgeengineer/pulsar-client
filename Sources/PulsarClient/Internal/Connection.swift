@@ -329,6 +329,26 @@ actor Connection: PulsarConnection {
       totalBytesSent += UInt64(data.count)
     }
 
+    // Check channel writability before sending
+    if !channel.isWritable {
+      logger.debug("Channel not writable, waiting for writability")
+      // Wait for the channel to become writable
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        channel.eventLoop.execute {
+          // Check again in case it became writable
+          if channel.isWritable {
+            continuation.resume()
+          } else {
+            // Schedule a check for when channel becomes writable
+            channel.pipeline.context(handlerType: PulsarFrameHandler.self).whenSuccess { context in
+              context.flush()
+              continuation.resume()
+            }
+          }
+        }
+      }
+    }
+
     try await channel.writeAndFlush(frame)
 
     // Update statistics
@@ -592,12 +612,14 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
   internal let frameStreamContinuation: AsyncStream<PulsarFrame>.Continuation
   let incomingFrames: AsyncStream<PulsarFrame>
   private var connectedHandler: ((PulsarFrame) -> Void)?
+  private var isReading = true
+  private var pendingFrames: [PulsarFrame] = []
 
   init(connection: Connection) {
     self.connection = connection
-    // Use unbounded buffering to ensure no frames are dropped
+    // Use bounded buffering with backpressure support
     (self.incomingFrames, self.frameStreamContinuation) = AsyncStream<PulsarFrame>.makeStream(
-      bufferingPolicy: .unbounded
+      bufferingPolicy: .bufferingNewest(1000)  // Buffer up to 1000 frames
     )
   }
 
@@ -629,10 +651,56 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
       }
     }
 
-    frameStreamContinuation.yield(frame)
-
-    // Frame processing is now handled by background processing task
-    // Remove redundant Task here to avoid duplicate processing
+    // Check if we can yield the frame directly
+    let result = frameStreamContinuation.yield(frame)
+    
+    // If the stream is saturated, we need to apply backpressure
+    if case .dropped = result {
+      // Store the frame for later delivery
+      pendingFrames.append(frame)
+      
+      // Stop reading from the socket if we have too many pending frames
+      if pendingFrames.count > 100 && isReading {
+        isReading = false
+        context.channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in
+          if let connection = self.connection {
+            Task {
+              connection.logger.debug("Applied backpressure - stopped reading from socket")
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  func channelWritabilityChanged(context: ChannelHandlerContext) {
+    // Resume reading if the channel becomes writable again and we have capacity
+    if context.channel.isWritable && !isReading && pendingFrames.count < 50 {
+      isReading = true
+      context.channel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in
+        if let connection = self.connection {
+          Task {
+            connection.logger.debug("Released backpressure - resumed reading from socket")
+          }
+        }
+      }
+      
+      // Try to deliver pending frames
+      deliverPendingFrames()
+    }
+  }
+  
+  private func deliverPendingFrames() {
+    while !pendingFrames.isEmpty {
+      let frame = pendingFrames.removeFirst()
+      let result = frameStreamContinuation.yield(frame)
+      
+      if case .dropped = result {
+        // Re-add the frame if it was dropped
+        pendingFrames.insert(frame, at: 0)
+        break
+      }
+    }
   }
 
   func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -659,6 +727,18 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
       Task {
         connection.logger.debug("PulsarFrameHandler channel is active")
       }
+    }
+  }
+  
+  func channelReadComplete(context: ChannelHandlerContext) {
+    // After reading a batch of frames, try to deliver any pending frames
+    if !pendingFrames.isEmpty {
+      deliverPendingFrames()
+    }
+    
+    // Continue reading if we have capacity
+    if isReading {
+      context.read()
     }
   }
 }
