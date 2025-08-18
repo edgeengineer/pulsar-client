@@ -59,7 +59,9 @@ actor Connection: PulsarConnection {
 
   internal var pendingRequests:
     [UInt64: AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.Continuation] = [:]
-  private var frameHandler: PulsarFrameHandler?
+  private var connectedHandler: ConnectedFrameHandler?
+  private var asyncChannel: NIOAsyncChannel<PulsarFrame, PulsarFrame>?
+  private var outboundWriter: NIOAsyncChannelOutboundWriter<PulsarFrame>?
   internal var channelManager: ChannelManager?
   private var backgroundProcessingTask: Task<Void, Never>?
   internal var healthMonitoringTask: Task<Void, Never>?
@@ -126,12 +128,12 @@ actor Connection: PulsarConnection {
     logger.debug("State updated to connecting")
 
     do {
-      let frameHandler = PulsarFrameHandler(connection: self)
-      self.frameHandler = frameHandler
+      let connectedHandler = ConnectedFrameHandler(connection: self)
+      self.connectedHandler = connectedHandler
 
       // Set up synchronous CONNECTED handler
       let connectedSignal = AsyncStream<Void>.makeStream()
-      frameHandler.setConnectedHandler { [weak self] frame in
+      connectedHandler.setConnectedHandler { [weak self] frame in
         guard let self = self else { return }
         Task {
           self.logger.debug(
@@ -143,20 +145,37 @@ actor Connection: PulsarConnection {
         connectedSignal.continuation.finish()
       }
 
+      logger.debug("Establishing TCP connection")
+      
+      // Create channel with traditional bootstrap
       let bootstrap = ClientBootstrap(group: eventLoopGroup)
         .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
         .channelOption(ChannelOptions.tcpOption(.tcp_nodelay), value: 1)
         .channelInitializer { channel in
-          self.setupChannelPipeline(channel: channel, frameHandler: frameHandler)
+          self.setupChannelPipeline(channel: channel, connectedHandler: connectedHandler)
         }
-
-      logger.debug("Establishing TCP connection")
+      
       let channel = try await bootstrap.connect(host: url.host, port: url.port).get()
       self.channel = channel
+      
+      // Wrap channel with NIOAsyncChannel on the event loop
+      let asyncChannel = try await channel.eventLoop.submit {
+        try NIOAsyncChannel<PulsarFrame, PulsarFrame>(
+          wrappingChannelSynchronously: channel,
+          configuration: NIOAsyncChannel.Configuration(
+            backPressureStrategy: .init(lowWatermark: 2, highWatermark: 100),
+            isOutboundHalfClosureEnabled: false,
+            inboundType: PulsarFrame.self,
+            outboundType: PulsarFrame.self
+          )
+        )
+      }.get()
+      
+      self.asyncChannel = asyncChannel
       logger.debug("TCP connection established")
 
       // Start background processing BEFORE sending CONNECT command (like C#)
-      startBackgroundProcessing()
+      startBackgroundProcessing(asyncChannel)
 
       // Wait for frame processing to actually start
       await waitForFrameProcessing()
@@ -252,10 +271,11 @@ actor Connection: PulsarConnection {
     // Close channels registered to this connection
     await channelManager?.closeAll()
 
-    // Finish the frame stream to stop frame processing
-    frameHandler?.frameStreamContinuation.finish()
-
-    // Close the channel and wait for it to complete
+    // Finish outbound writer if available
+    outboundWriter?.finish()
+    self.outboundWriter = nil
+    
+    // Close the underlying channel
     if let channel = channel {
       logger.debug("Closing NIO channel")
       do {
@@ -265,7 +285,9 @@ actor Connection: PulsarConnection {
         logger.debug("Error closing NIO channel", metadata: ["error": "\(error)"])
       }
     }
-    channel = nil
+    
+    self.asyncChannel = nil
+    self.channel = nil
 
     // Close any background tasks
     backgroundProcessingTask?.cancel()
@@ -289,7 +311,7 @@ actor Connection: PulsarConnection {
   }
 
   private nonisolated func setupChannelPipeline(
-    channel: NIOCore.Channel, frameHandler: PulsarFrameHandler
+    channel: NIOCore.Channel, connectedHandler: ConnectedFrameHandler
   ) -> EventLoopFuture<Void> {
 
     var handlers: [ChannelHandler] = []
@@ -305,19 +327,27 @@ actor Connection: PulsarConnection {
       }
     }
 
-    // Add a raw data logger first
+    // Add a raw data logger for debugging
     handlers.append(RawDataLogger())
 
-    // Add frame codec handlers
+    // Add frame codec handlers (decoder and encoder)
     handlers.append(ByteToMessageHandler(PulsarFrameByteDecoder()))
     handlers.append(MessageToByteHandler(PulsarFrameByteEncoder()))
-    handlers.append(frameHandler)
+    
+    // Add the handler that filters out CONNECTED frames
+    handlers.append(connectedHandler)
+    
+    // NIOAsyncChannel will be added after this pipeline setup
 
     return channel.pipeline.addHandlers(handlers)
   }
 
+  private func setOutboundWriter(_ writer: NIOAsyncChannelOutboundWriter<PulsarFrame>) {
+    self.outboundWriter = writer
+  }
+  
   internal func sendFrame(_ frame: PulsarFrame) async throws {
-    guard let channel = channel else {
+    guard let outboundWriter = outboundWriter else {
       throw PulsarClientError.connectionFailed("No channel available")
     }
 
@@ -329,40 +359,29 @@ actor Connection: PulsarConnection {
       totalBytesSent += UInt64(data.count)
     }
 
-    // Check channel writability before sending
-    if !channel.isWritable {
-      logger.debug("Channel not writable, waiting for writability")
-      // Wait for the channel to become writable
-      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-        channel.eventLoop.execute {
-          // Check again in case it became writable
-          if channel.isWritable {
-            continuation.resume()
-          } else {
-            // Schedule a check for when channel becomes writable
-            channel.pipeline.context(handlerType: PulsarFrameHandler.self).whenSuccess { context in
-              context.flush()
-              continuation.resume()
-            }
-          }
-        }
-      }
-    }
-
-    try await channel.writeAndFlush(frame)
+    // NIOAsyncChannel handles backpressure automatically
+    try await outboundWriter.write(frame)
 
     // Update statistics
     totalMessagesSent += 1
   }
 
   /// Start background processing (equivalent to C# Setup method)
-  private func startBackgroundProcessing() {
+  private func startBackgroundProcessing(_ asyncChannel: NIOAsyncChannel<PulsarFrame, PulsarFrame>) {
     logger.trace("Creating background processing task")
     backgroundProcessingTask = Task.detached { [weak self] in
       guard let self = self else { return }
       self.logger.trace("Background processing task started")
       await self.markFrameProcessingStarted()
-      await self.processIncomingFramesContinuously()
+      
+      // Use executeThenClose for scoped access to inbound/outbound streams
+      do {
+        try await asyncChannel.executeThenClose { inbound, outbound in
+          await self.processIncomingFramesContinuously(inbound: inbound, outbound: outbound)
+        }
+      } catch {
+        self.logger.error("Background processing error: \(error)")
+      }
     }
     logger.trace("Background processing task created")
   }
@@ -393,53 +412,58 @@ actor Connection: PulsarConnection {
   }
 
   /// Continuously process incoming frames (equivalent to C# ProcessIncomingFrames)
-  private func processIncomingFramesContinuously() async {
-    guard let frameHandler = frameHandler else {
-      logger.error("No frame handler available for background processing")
-      return
-    }
-
+  private func processIncomingFramesContinuously(
+    inbound: NIOAsyncChannelInboundStream<PulsarFrame>,
+    outbound: NIOAsyncChannelOutboundWriter<PulsarFrame>
+  ) async {
+    // Store the outbound writer for sending frames
+    setOutboundWriter(outbound)
+    
     logger.trace("Starting continuous frame processing")
 
     var frameCount = 0
-    for await frame in frameHandler.incomingFrames {
-      frameCount += 1
-      logger.trace("Received frame", metadata: ["frameNumber": "\(frameCount)", "type": "\(frame.command.type)"])
+    do {
+      for try await frame in inbound {
+        frameCount += 1
+        logger.trace("Received frame", metadata: ["frameNumber": "\(frameCount)", "type": "\(frame.command.type)"])
 
-      // Log more details for specific frame types
-      switch frame.command.type {
-      case .sendReceipt:
-        logger.trace(
-          "SendReceipt details", metadata: ["producerId": "\(frame.command.sendReceipt.producerID)", "sequenceId": "\(frame.command.sendReceipt.sequenceID)"]
-        )
-      case .sendError:
-        logger.error(
-          "SendError details - producerID: \(frame.command.sendError.producerID), sequenceID: \(frame.command.sendError.sequenceID), error: \(frame.command.sendError.error)"
-        )
-      case .error:
-        logger.error(
-          "Error frame - requestID: \(frame.command.error.requestID), message: \(frame.command.error.message)"
-        )
-      default:
-        break
+        // Log more details for specific frame types
+        switch frame.command.type {
+        case .sendReceipt:
+          logger.trace(
+            "SendReceipt details", metadata: ["producerId": "\(frame.command.sendReceipt.producerID)", "sequenceId": "\(frame.command.sendReceipt.sequenceID)"]
+          )
+        case .sendError:
+          logger.error(
+            "SendError details - producerID: \(frame.command.sendError.producerID), sequenceID: \(frame.command.sendError.sequenceID), error: \(frame.command.sendError.error)"
+          )
+        case .error:
+          logger.error(
+            "Error frame - requestID: \(frame.command.error.requestID), message: \(frame.command.error.message)"
+          )
+        default:
+          break
+        }
+
+        // CONNECTED is handled synchronously in the frame handler
+        if frame.command.type == .connected {
+          logger.debug(
+            "CONNECTED frame received in background processing - this should have been handled synchronously"
+          )
+          continue
+        }
+
+        // Process all other frames through the enhanced handler
+        handleIncomingFrame(frame)
+
+        // Exit if connection is no longer active
+        if _state == .closed || _state == .closing {
+          logger.trace("Stopping frame processing - connection closed")
+          break
+        }
       }
-
-      // CONNECTED is handled synchronously in the frame handler
-      if frame.command.type == .connected {
-        logger.debug(
-          "CONNECTED frame received in background processing - this should have been handled synchronously"
-        )
-        continue
-      }
-
-      // Process all other frames through the enhanced handler
-      handleIncomingFrame(frame)
-
-      // Exit if connection is no longer active
-      if _state == .closed || _state == .closing {
-        logger.trace("Stopping frame processing - connection closed")
-        break
-      }
+    } catch {
+      logger.error("Frame processing error: \(error)")
     }
 
     logger.trace("Frame processing loop ended", metadata: ["frameCount": "\(frameCount)"])
@@ -603,28 +627,30 @@ final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
   }
 }
 
-// MARK: - Frame Handler
+// MARK: - Connection Handler
+// This handler only handles the special CONNECTED frame synchronously
+// All other frames are passed through to the NIOAsyncChannel
 
-final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
+final class ConnectedFrameHandler: ChannelInboundHandler, @unchecked Sendable {
   typealias InboundIn = PulsarFrame
+  typealias InboundOut = PulsarFrame
 
   private weak var connection: Connection?
-  internal let frameStreamContinuation: AsyncStream<PulsarFrame>.Continuation
-  let incomingFrames: AsyncStream<PulsarFrame>
   private var connectedHandler: ((PulsarFrame) -> Void)?
-  private var isReading = true
-  private var pendingFrames: [PulsarFrame] = []
+  private var connectedFrameBuffer: PulsarFrame?
 
   init(connection: Connection) {
     self.connection = connection
-    // Use bounded buffering with backpressure support
-    (self.incomingFrames, self.frameStreamContinuation) = AsyncStream<PulsarFrame>.makeStream(
-      bufferingPolicy: .bufferingNewest(1000)  // Buffer up to 1000 frames
-    )
   }
 
   func setConnectedHandler(_ handler: @escaping (PulsarFrame) -> Void) {
     self.connectedHandler = handler
+    // If we already received CONNECTED, call the handler immediately
+    if let bufferedFrame = connectedFrameBuffer {
+      handler(bufferedFrame)
+      connectedHandler = nil
+      connectedFrameBuffer = nil
+    }
   }
 
   func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -643,103 +669,46 @@ final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
         }
       }
 
-      // Call synchronous handler if set
+      // Call synchronous handler if set, otherwise buffer it
       if let handler = connectedHandler {
         handler(frame)
         connectedHandler = nil  // Clear after use
-        return  // Don't yield CONNECTED to AsyncStream
+      } else {
+        // Buffer the CONNECTED frame in case the handler is set later
+        connectedFrameBuffer = frame
       }
+      return  // Don't pass CONNECTED to the async channel
     }
 
-    // Check if we can yield the frame directly
-    let result = frameStreamContinuation.yield(frame)
-    
-    // If the stream is saturated, we need to apply backpressure
-    if case .dropped = result {
-      // Store the frame for later delivery
-      pendingFrames.append(frame)
-      
-      // Stop reading from the socket if we have too many pending frames
-      if pendingFrames.count > 100 && isReading {
-        isReading = false
-        context.channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in
-          if let connection = self.connection {
-            Task {
-              connection.logger.debug("Applied backpressure - stopped reading from socket")
-            }
-          }
-        }
-      }
-    }
-  }
-  
-  func channelWritabilityChanged(context: ChannelHandlerContext) {
-    // Resume reading if the channel becomes writable again and we have capacity
-    if context.channel.isWritable && !isReading && pendingFrames.count < 50 {
-      isReading = true
-      context.channel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in
-        if let connection = self.connection {
-          Task {
-            connection.logger.debug("Released backpressure - resumed reading from socket")
-          }
-        }
-      }
-      
-      // Try to deliver pending frames
-      deliverPendingFrames()
-    }
-  }
-  
-  private func deliverPendingFrames() {
-    while !pendingFrames.isEmpty {
-      let frame = pendingFrames.removeFirst()
-      let result = frameStreamContinuation.yield(frame)
-      
-      if case .dropped = result {
-        // Re-add the frame if it was dropped
-        pendingFrames.insert(frame, at: 0)
-        break
-      }
-    }
+    // Pass all other frames through to the async channel
+    context.fireChannelRead(self.wrapInboundOut(frame))
   }
 
   func errorCaught(context: ChannelHandlerContext, error: Error) {
     if let connection = connection {
       Task {
-        connection.logger.error("PulsarFrameHandler error", metadata: ["error": "\(error)"])
+        connection.logger.error("ConnectedFrameHandler error", metadata: ["error": "\(error)"])
       }
     }
-    frameStreamContinuation.finish()
-    context.close(promise: nil)
+    context.fireErrorCaught(error)
   }
 
   func channelInactive(context: ChannelHandlerContext) {
     if let connection = connection {
       Task {
-        connection.logger.debug("PulsarFrameHandler channel became inactive")
+        connection.logger.debug("ConnectedFrameHandler channel became inactive")
       }
     }
-    frameStreamContinuation.finish()
+    context.fireChannelInactive()
   }
 
   func channelActive(context: ChannelHandlerContext) {
     if let connection = connection {
       Task {
-        connection.logger.debug("PulsarFrameHandler channel is active")
+        connection.logger.debug("ConnectedFrameHandler channel is active")
       }
     }
-  }
-  
-  func channelReadComplete(context: ChannelHandlerContext) {
-    // After reading a batch of frames, try to deliver any pending frames
-    if !pendingFrames.isEmpty {
-      deliverPendingFrames()
-    }
-    
-    // Continue reading if we have capacity
-    if isReading {
-      context.read()
-    }
+    context.fireChannelActive()
   }
 }
 

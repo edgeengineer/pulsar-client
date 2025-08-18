@@ -1,6 +1,5 @@
 import Foundation
 import Logging
-import AsyncAlgorithms
 
 /// Consumer implementation
 actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
@@ -17,7 +16,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     internal let stateStream: AsyncStream<ClientState>
     private let stateContinuation: AsyncStream<ClientState>.Continuation
     
-    private let messageChannel: AsyncChannel<Message<T>>
+    private let messageStream: AsyncStream<Message<T>>
+    private let messageStreamContinuation: AsyncStream<Message<T>>.Continuation
     private var receiveTask: Task<Void, Never>?
     private var permits: Int
     private var isFirstFlow = true
@@ -63,7 +63,9 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         self.permits = 0  // Start with 0 permits, will request them in runReceiver
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
-        self.messageChannel = AsyncChannel()
+        (self.messageStream, self.messageStreamContinuation) = AsyncStream<Message<T>>.makeStream(
+            bufferingPolicy: .bufferingNewest(1000)  // Buffer up to 1000 messages
+        )
         
         // Initialize DLQ handler if policy is configured
         if let dlqPolicy = configuration.deadLetterPolicy,
@@ -98,8 +100,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     
     deinit {
         stateContinuation.finish()
+        messageStreamContinuation.finish()
         receiveTask?.cancel()
-        // messageChannel will be cleaned up automatically
     }
     
     // MARK: - StateHolder
@@ -208,7 +210,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             
             group.addTask { [weak self] in
                 guard let self = self else { return nil }
-                for await message in self.messageChannel {
+                for await message in self.messageStream {
                     return message
                 }
                 return nil
@@ -245,9 +247,9 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             throw PulsarClientError.consumerBusy("Consumer not connected")
         }
         
-        // Get message from channel
+        // Get message from stream
         var message: Message<T>?
-        for await msg in messageChannel {
+        for await msg in messageStream {
             message = msg
             break
         }
@@ -508,8 +510,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         // Cancel receive task
         receiveTask?.cancel()
         
-        // Close message channel
-        messageChannel.finish()
+        // Close message stream
+        messageStreamContinuation.finish()
         
         // Reset buffered message count
         bufferedMessageCount = 0
@@ -579,7 +581,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             logger.trace("Received message, permits remaining: \(permits)")
             
             // Add to queue
-            await messageChannel.send(message)
+            messageStreamContinuation.yield(message)
             
             // Increment buffered count
             bufferedMessageCount += 1
