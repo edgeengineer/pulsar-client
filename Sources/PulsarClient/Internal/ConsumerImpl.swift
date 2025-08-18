@@ -2,8 +2,9 @@ import Foundation
 import Logging
 
 /// Consumer implementation
-actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
+actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
     typealias MessageType = T
+    typealias Element = Message<T>
     private let id: UInt64
     private let connection: Connection
     private let schema: Schema<T>
@@ -16,8 +17,10 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     internal let stateStream: AsyncStream<ClientState>
     private let stateContinuation: AsyncStream<ClientState>.Continuation
     
+    // Message stream with built-in backpressure via buffering policy
     private let messageStream: AsyncStream<Message<T>>
-    private let messageStreamContinuation: AsyncStream<Message<T>>.Continuation
+    private let messageContinuation: AsyncStream<Message<T>>.Continuation
+    
     private var receiveTask: Task<Void, Never>?
     private var permits: Int
     private var isFirstFlow = true
@@ -63,8 +66,12 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         self.permits = 0  // Start with 0 permits, will request them in runReceiver
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
-        (self.messageStream, self.messageStreamContinuation) = AsyncStream<Message<T>>.makeStream(
-            bufferingPolicy: .bufferingNewest(1000)  // Buffer up to 1000 messages
+        
+        // Create async stream with buffering for backpressure
+        // The bufferingOldest policy will drop old messages if buffer is full
+        // Combined with Pulsar's permit system, this provides effective backpressure
+        (self.messageStream, self.messageContinuation) = AsyncStream<Message<T>>.makeStream(
+            bufferingPolicy: .bufferingOldest(configuration.receiverQueueSize)
         )
         
         // Initialize DLQ handler if policy is configured
@@ -100,8 +107,8 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     
     deinit {
         stateContinuation.finish()
-        messageStreamContinuation.finish()
         receiveTask?.cancel()
+        messageContinuation.finish()
     }
     
     // MARK: - StateHolder
@@ -197,49 +204,51 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             throw PulsarClientError.consumerBusy("Consumer not connected")
         }
         
-        // Race between timeout and receive
-        let result = await withTaskGroup(of: Message<T>?.self) { group in
+        // Race between timeout and receive using proper error handling
+        return try await withThrowingTaskGroup(of: Message<T>.self) { group in
+            // Add timeout task
             group.addTask {
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    return nil
-                } catch {
-                    return nil
-                }
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw PulsarClientError.timeout("Receive operation timed out after \(timeout) seconds")
             }
             
+            // Add receive task
             group.addTask { [weak self] in
-                guard let self = self else { return nil }
+                guard let self = self else {
+                    throw PulsarClientError.consumerBusy("Consumer deallocated")
+                }
+                
+                // Try to receive a message from the stream
                 for await message in self.messageStream {
                     return message
                 }
-                return nil
+                throw PulsarClientError.consumerBusy("Consumer closed")
             }
             
-            let result = await group.next()!
+            // Wait for the first task to complete (either timeout or message received)
+            guard var message = try await group.next() else {
+                throw PulsarClientError.consumerBusy("No message available")
+            }
+            
+            // Cancel the other task
             group.cancelAll()
-            return result
+            
+            // Decrement buffered count since we're delivering a message
+            self.bufferedMessageCount = Swift.max(0, self.bufferedMessageCount - 1)
+            
+            // Process through interceptors if configured
+            if let interceptors = self.interceptors {
+                message = try await interceptors.beforeConsume(consumer: self, message: message)
+            }
+            
+            // Flow control: request more messages if needed
+            // Note: permits are already decremented in handleIncomingMessage
+            if self.permits <= self.configuration.receiverQueueSize / 4 {
+                await self.requestMoreMessages()
+            }
+            
+            return message
         }
-        
-        guard var message = result else {
-            throw PulsarClientError.timeout("Receive operation timed out after \(timeout) seconds")
-        }
-        
-        // Decrement buffered count since we're delivering a message
-        bufferedMessageCount = max(0, bufferedMessageCount - 1)
-        
-        // Process through interceptors if configured
-        if let interceptors = interceptors {
-            message = try await interceptors.beforeConsume(consumer: self, message: message)
-        }
-        
-        // Flow control: request more messages if needed
-        // Note: permits are already decremented in handleIncomingMessage
-        if permits <= configuration.receiverQueueSize / 4 {
-            await requestMoreMessages()
-        }
-        
-        return message
     }
     
     public func receive() async throws -> Message<T> {
@@ -248,31 +257,28 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         }
         
         // Get message from stream
-        var message: Message<T>?
-        for await msg in messageStream {
-            message = msg
-            break
+        for await message in messageStream {
+            var unwrappedMessage = message
+            
+            // Decrement buffered count since we're delivering a message
+            bufferedMessageCount = Swift.max(0, bufferedMessageCount - 1)
+            
+            // Process through interceptors if configured
+            if let interceptors = interceptors {
+                unwrappedMessage = try await interceptors.beforeConsume(consumer: self, message: unwrappedMessage)
+            }
+            
+            // Flow control: request more messages if needed
+            // Note: permits are already decremented in handleIncomingMessage
+            if permits <= configuration.receiverQueueSize / 4 {
+                await requestMoreMessages()
+            }
+            
+            return unwrappedMessage
         }
         
-        guard var unwrappedMessage = message else {
-            throw PulsarClientError.consumerBusy("Consumer closed")
-        }
-        
-        // Decrement buffered count since we're delivering a message
-        bufferedMessageCount = max(0, bufferedMessageCount - 1)
-        
-        // Process through interceptors if configured
-        if let interceptors = interceptors {
-            unwrappedMessage = try await interceptors.beforeConsume(consumer: self, message: unwrappedMessage)
-        }
-        
-        // Flow control: request more messages if needed
-        // Note: permits are already decremented in handleIncomingMessage
-        if permits <= configuration.receiverQueueSize / 4 {
-            await requestMoreMessages()
-        }
-        
-        return unwrappedMessage
+        // Stream ended
+        throw PulsarClientError.consumerBusy("Consumer closed")
     }
     
     public func receiveBatch(maxMessages: Int) async throws -> [Message<T>] {
@@ -293,6 +299,58 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         }
         
         return messages
+    }
+    
+    // MARK: - AsyncSequence Conformance
+    
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        private let consumer: ConsumerImpl<T>
+        
+        init(consumer: ConsumerImpl<T>) {
+            self.consumer = consumer
+        }
+        
+        public mutating func next() async throws -> Message<T>? {
+            guard await consumer._state == .connected else {
+                return nil
+            }
+            
+            // Get next message from the stream
+            for await message in consumer.messageStream {
+                var msg = message
+                
+                // Process message
+                await consumer.processReceivedMessage(&msg)
+                return msg
+            }
+            
+            return nil
+        }
+    }
+    
+    public nonisolated func makeAsyncIterator() -> AsyncIterator {
+        return AsyncIterator(consumer: self)
+    }
+    
+    /// Process a received message (decrement counts, apply interceptors, etc.)
+    private func processReceivedMessage(_ message: inout Message<T>) async {
+        // Decrement buffered count since we're delivering a message
+        bufferedMessageCount = Swift.max(0, bufferedMessageCount - 1)
+        
+        // Process through interceptors if configured
+        if let interceptors = interceptors {
+            message = try! await interceptors.beforeConsume(consumer: self, message: message)
+        }
+        
+        // Request more permits if we're running low
+        if permits < configuration.receiverQueueSize / 2 {
+            await requestMorePermits()
+        }
+    }
+    
+    /// Request more permits from the broker
+    private func requestMorePermits() async {
+        await requestMoreMessages()
     }
     
     public func acknowledge(_ message: Message<T>) async throws {
@@ -511,7 +569,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         receiveTask?.cancel()
         
         // Close message stream
-        messageStreamContinuation.finish()
+        messageContinuation.finish()
         
         // Reset buffered message count
         bufferedMessageCount = 0
@@ -580,8 +638,10 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             permits -= 1
             logger.trace("Received message, permits remaining: \(permits)")
             
-            // Add to queue
-            messageStreamContinuation.yield(message)
+            // Add to message stream
+            // The stream's buffering policy handles backpressure
+            // Combined with Pulsar's permit system, this prevents unbounded growth
+            messageContinuation.yield(message)
             
             // Increment buffered count
             bufferedMessageCount += 1

@@ -100,10 +100,17 @@ actor Connection: PulsarConnection {
   }
 
   deinit {
-    // Cancel any running tasks
+    // Cancel any running tasks immediately
     backgroundProcessingTask?.cancel()
     healthMonitoringTask?.cancel()
+    authRefreshTask?.cancel()
     stateContinuation.finish()
+    
+    // Clear any remaining pending requests
+    for (_, continuation) in pendingRequests {
+      continuation.finish(throwing: PulsarClientError.connectionFailed("Connection deallocated"))
+    }
+    pendingRequests.removeAll()
   }
 
   func connect() async throws {
@@ -262,11 +269,8 @@ actor Connection: PulsarConnection {
     logger.debug("Starting connection close process")
     updateState(.closing)
 
-    // Cancel all pending requests
-    for (_, continuation) in pendingRequests {
-      continuation.finish(throwing: PulsarClientError.connectionFailed("Connection closing"))
-    }
-    pendingRequests.removeAll()
+    // Fail all pending requests
+    await failAllPendingRequests(error: PulsarClientError.connectionFailed("Connection closing"))
 
     // Close channels registered to this connection
     await channelManager?.closeAll()
@@ -309,6 +313,30 @@ actor Connection: PulsarConnection {
     _state = newState
     stateContinuation.yield(newState)
   }
+  
+  /// Handle connection error by updating state and failing all pending operations
+  private func handleConnectionError(_ error: Error) async {
+    logger.error("Connection error occurred", metadata: ["error": "\(error)"])
+    updateState(.faulted(error))
+    
+    // Fail all pending requests
+    await failAllPendingRequests(error: error)
+    
+    // Notify channel manager of connection failure
+    await channelManager?.handleConnectionFailure(error: error)
+    
+    // Close the connection
+    await close()
+  }
+  
+  /// Fail all pending requests with the given error
+  private func failAllPendingRequests(error: Error) async {
+    for (requestId, continuation) in pendingRequests {
+      logger.debug("Failing pending request", metadata: ["requestId": "\(requestId)"])
+      continuation.finish(throwing: error)
+    }
+    pendingRequests.removeAll()
+  }
 
   private nonisolated func setupChannelPipeline(
     channel: NIOCore.Channel, connectedHandler: ConnectedFrameHandler
@@ -339,7 +367,7 @@ actor Connection: PulsarConnection {
     
     // NIOAsyncChannel will be added after this pipeline setup
 
-    return channel.pipeline.addHandlers(handlers)
+    return channel.pipeline.addHandlers(handlers, position: .last)
   }
 
   private func setOutboundWriter(_ writer: NIOAsyncChannelOutboundWriter<PulsarFrame>) {
@@ -369,7 +397,8 @@ actor Connection: PulsarConnection {
   /// Start background processing (equivalent to C# Setup method)
   private func startBackgroundProcessing(_ asyncChannel: NIOAsyncChannel<PulsarFrame, PulsarFrame>) {
     logger.trace("Creating background processing task")
-    backgroundProcessingTask = Task.detached { [weak self] in
+    // Use structured Task instead of detached to ensure proper cleanup
+    backgroundProcessingTask = Task { [weak self] in
       guard let self = self else { return }
       self.logger.trace("Background processing task started")
       await self.markFrameProcessingStarted()
@@ -377,10 +406,14 @@ actor Connection: PulsarConnection {
       // Use executeThenClose for scoped access to inbound/outbound streams
       do {
         try await asyncChannel.executeThenClose { inbound, outbound in
-          await self.processIncomingFramesContinuously(inbound: inbound, outbound: outbound)
+          try await self.processIncomingFramesContinuously(inbound: inbound, outbound: outbound)
         }
       } catch {
-        self.logger.error("Background processing error: \(error)")
+        if !Task.isCancelled {
+          self.logger.error("Background processing error", metadata: ["error": "\(error)"])
+          // Propagate error to connection state and fail all pending operations
+          await self.handleConnectionError(error)
+        }
       }
     }
     logger.trace("Background processing task created")
@@ -415,7 +448,7 @@ actor Connection: PulsarConnection {
   private func processIncomingFramesContinuously(
     inbound: NIOAsyncChannelInboundStream<PulsarFrame>,
     outbound: NIOAsyncChannelOutboundWriter<PulsarFrame>
-  ) async {
+  ) async throws {
     // Store the outbound writer for sending frames
     setOutboundWriter(outbound)
     
@@ -425,45 +458,52 @@ actor Connection: PulsarConnection {
     do {
       for try await frame in inbound {
         frameCount += 1
-        logger.trace("Received frame", metadata: ["frameNumber": "\(frameCount)", "type": "\(frame.command.type)"])
+        logger.trace("Received frame", metadata: [
+          "frameNumber": "\(frameCount)", 
+          "type": "\(frame.command.type)"
+        ])
 
         // Log more details for specific frame types
         switch frame.command.type {
         case .sendReceipt:
-          logger.trace(
-            "SendReceipt details", metadata: ["producerId": "\(frame.command.sendReceipt.producerID)", "sequenceId": "\(frame.command.sendReceipt.sequenceID)"]
-          )
+          logger.trace("SendReceipt details", metadata: [
+            "producerId": "\(frame.command.sendReceipt.producerID)", 
+            "sequenceId": "\(frame.command.sendReceipt.sequenceID)"
+          ])
         case .sendError:
-          logger.error(
-            "SendError details - producerID: \(frame.command.sendError.producerID), sequenceID: \(frame.command.sendError.sequenceID), error: \(frame.command.sendError.error)"
-          )
+          logger.error("SendError received", metadata: [
+            "producerId": "\(frame.command.sendError.producerID)",
+            "sequenceId": "\(frame.command.sendError.sequenceID)",
+            "error": "\(frame.command.sendError.error)"
+          ])
         case .error:
-          logger.error(
-            "Error frame - requestID: \(frame.command.error.requestID), message: \(frame.command.error.message)"
-          )
+          logger.error("Error frame received", metadata: [
+            "requestId": "\(frame.command.error.requestID)",
+            "message": "\(frame.command.error.message)"
+          ])
         default:
           break
         }
 
         // CONNECTED is handled synchronously in the frame handler
         if frame.command.type == .connected {
-          logger.debug(
-            "CONNECTED frame received in background processing - this should have been handled synchronously"
-          )
+          logger.debug("CONNECTED frame in background processing - should have been handled synchronously")
           continue
         }
 
         // Process all other frames through the enhanced handler
         handleIncomingFrame(frame)
 
-        // Exit if connection is no longer active
-        if _state == .closed || _state == .closing {
-          logger.trace("Stopping frame processing - connection closed")
+        // Exit if connection is no longer active or task is cancelled
+        if _state == .closed || _state == .closing || Task.isCancelled {
+          logger.trace("Stopping frame processing - connection closed or task cancelled")
           break
         }
       }
     } catch {
-      logger.error("Frame processing error: \(error)")
+      logger.error("Frame processing error", metadata: ["error": "\(error)"])
+      // Re-throw the error to propagate it up
+      throw error
     }
 
     logger.trace("Frame processing loop ended", metadata: ["frameCount": "\(frameCount)"])
@@ -685,25 +725,24 @@ final class ConnectedFrameHandler: ChannelInboundHandler, @unchecked Sendable {
   }
 
   func errorCaught(context: ChannelHandlerContext, error: Error) {
-    if let connection = connection {
+    if let connection {
       Task {
         connection.logger.error("ConnectedFrameHandler error", metadata: ["error": "\(error)"])
       }
     }
-    context.fireErrorCaught(error)
+    context.close(promise: nil)
   }
 
-  func channelInactive(context: ChannelHandlerContext) {
-    if let connection = connection {
+  func channelInactive(context: ChannelHandlerContext) { 
+    if let connection {
       Task {
         connection.logger.debug("ConnectedFrameHandler channel became inactive")
       }
     }
-    context.fireChannelInactive()
   }
 
   func channelActive(context: ChannelHandlerContext) {
-    if let connection = connection {
+    if let connection {
       Task {
         connection.logger.debug("ConnectedFrameHandler channel is active")
       }

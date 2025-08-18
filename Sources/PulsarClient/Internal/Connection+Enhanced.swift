@@ -298,56 +298,59 @@ extension Connection {
   }
 
   private func handlePing() {
-    Task {
-      let pong = commandBuilder.pong()
+    Task { [weak self] in
+      guard let self = self else { return }
+      let pong = await self.commandBuilder.pong()
       let frame = PulsarFrame(command: pong)
-      try? await sendFrame(frame)
-      logger.trace("Sent PONG in response to PING")
+      try? await self.sendFrame(frame)
+      self.logger.trace("Sent PONG in response to PING")
     }
   }
 
   private func handleMessage(_ message: Pulsar_Proto_CommandMessage, frame: PulsarFrame) {
-    Task {
+    Task { [weak self] in
+      guard let self = self else { return }
       guard let metadata = frame.metadata, let payload = frame.payload else {
-        logger.debug("Received message without metadata or payload")
+        self.logger.debug("Received message without metadata or payload")
         return
       }
 
-      await channelManager?.handleIncomingMessage(message, payload: payload, metadata: metadata)
+      await self.channelManager?.handleIncomingMessage(message, payload: payload, metadata: metadata)
     }
   }
 
   private func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
     logger.trace(
       "Received SendReceipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"])
-    Task {
+    Task { [weak self] in
+      guard let self = self else { return }
       // Forward to the producer channel
-      if let producerChannel = await channelManager?.getProducer(id: receipt.producerID) {
-        logger.trace(
+      if let producerChannel = await self.channelManager?.getProducer(id: receipt.producerID) {
+        self.logger.trace(
           "Found producer channel, forwarding receipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"]
         )
         await producerChannel.handleSendReceipt(receipt)
       } else {
-        logger.debug("Received send receipt for unknown producer", metadata: ["producerId": "\(receipt.producerID)"])
+        self.logger.debug("Received send receipt for unknown producer", metadata: ["producerId": "\(receipt.producerID)"])
       }
     }
   }
 
   private func handleActiveConsumerChange(_ change: Pulsar_Proto_CommandActiveConsumerChange) {
-    Task {
-      await channelManager?.handleActiveConsumerChange(change)
+    Task { [weak self] in
+      await self?.channelManager?.handleActiveConsumerChange(change)
     }
   }
 
   private func handleCloseProducer(_ close: Pulsar_Proto_CommandCloseProducer) {
-    Task {
-      await channelManager?.handleCloseProducer(close)
+    Task { [weak self] in
+      await self?.channelManager?.handleCloseProducer(close)
     }
   }
 
   private func handleCloseConsumer(_ close: Pulsar_Proto_CommandCloseConsumer) {
-    Task {
-      await channelManager?.handleCloseConsumer(close)
+    Task { [weak self] in
+      await self?.channelManager?.handleCloseConsumer(close)
     }
   }
 
@@ -366,15 +369,16 @@ extension Connection {
   }
 
   private func handleAuthChallenge(_ challenge: Pulsar_Proto_CommandAuthChallenge) {
-    Task {
+    Task { [weak self] in
+      guard let self = self else { return }
       do {
-        guard let auth = authentication else {
-          logger.error("Received auth challenge but no authentication configured")
+        guard let auth = self.authentication else {
+          self.logger.error("Received auth challenge but no authentication configured")
           await self.close()
           return
         }
 
-        logger.debug("Responding to authentication challenge")
+        self.logger.debug("Responding to authentication challenge")
 
         // Get response data from authentication provider
         let responseData = try await auth.handleAuthenticationChallenge(challenge)
@@ -385,14 +389,14 @@ extension Connection {
         authData.authData = responseData
 
         // Send auth response
-        let authResponse = commandBuilder.authResponse(response: authData)
+        let authResponse = await self.commandBuilder.authResponse(response: authData)
         let frame = PulsarFrame(command: authResponse)
 
-        try await sendFrame(frame)
-        logger.debug("Sent authentication response")
+        try await self.sendFrame(frame)
+        self.logger.debug("Sent authentication response")
 
       } catch {
-        logger.error("Failed to handle auth challenge: \(error)")
+        self.logger.error("Failed to handle auth challenge: \(error)")
         await self.close()
       }
     }
@@ -689,8 +693,8 @@ extension Connection {
     healthMonitoringTask?.cancel()
 
     // Create and store new monitoring task
-    healthMonitoringTask = Task {
-      await monitorConnectionHealth()
+    healthMonitoringTask = Task { [weak self] in
+      await self?.monitorConnectionHealth()
     }
   }
 
