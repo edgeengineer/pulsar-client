@@ -407,6 +407,36 @@ actor Connection: PulsarConnection {
   private func setConnectedAt(_ date: Date) {
     connectedAt = date
   }
+  
+  /// Get request ID from response frames
+  private func getResponseRequestId(from command: Pulsar_Proto_BaseCommand) -> UInt64? {
+    switch command.type {
+    case .producerSuccess:
+      return command.producerSuccess.requestID
+    case .success:
+      return command.success.requestID
+    case .error:
+      return command.error.requestID
+    case .lookupResponse:
+      return command.lookupTopicResponse.requestID
+    case .partitionedMetadataResponse:
+      return command.partitionMetadataResponse.requestID
+    case .getLastMessageIDResponse:
+      return command.getLastMessageIDResponse.requestID
+    case .getSchemaResponse:
+      return command.getSchemaResponse.requestID
+    case .newTxnResponse:
+      return command.newTxnResponse.requestID
+    case .addPartitionToTxnResponse:
+      return command.addPartitionToTxnResponse.requestID
+    case .endTxnResponse:
+      return command.endTxnResponse.requestID
+    case .addSubscriptionToTxnResponse:
+      return command.addSubscriptionToTxnResponse.requestID
+    default:
+      return nil
+    }
+  }
 
   /// Continuously process incoming frames (equivalent to C# ProcessIncomingFrames)
   private func processIncomingFramesContinuously(
@@ -427,31 +457,95 @@ actor Connection: PulsarConnection {
           "type": "\(frame.command.type)"
         ])
 
-        // Log more details for specific frame types
+        // Handle frames that complete or fail continuations
         switch frame.command.type {
         case .sendReceipt:
+          // SendReceipt completes a producer send operation
           logger.trace("SendReceipt details", metadata: [
             "producerId": "\(frame.command.sendReceipt.producerID)", 
             "sequenceId": "\(frame.command.sendReceipt.sequenceID)"
           ])
+          // Forward to producer channel for handling
+          Task { [weak self] in
+            guard let self = self else { return }
+            if let producerChannel = await self.channelManager?.getProducer(id: frame.command.sendReceipt.producerID) {
+              await producerChannel.handleSendReceipt(frame.command.sendReceipt)
+            }
+          }
+          
         case .sendError:
+          // SendError fails a producer send operation
           logger.error("SendError received", metadata: [
             "producerId": "\(frame.command.sendError.producerID)",
             "sequenceId": "\(frame.command.sendError.sequenceID)",
             "error": "\(frame.command.sendError.error)"
           ])
+          // Forward to producer channel for handling
+          // Note: ProducerChannel handles send errors internally via SendOperation
+          // We could enhance this to fail the specific send operation if needed
+          
         case .error:
+          // Error fails a pending request continuation
           logger.error("Error frame received", metadata: [
             "requestId": "\(frame.command.error.requestID)",
             "message": "\(frame.command.error.message)"
           ])
+          // Check if this error is for a pending request
+          if let continuation = pendingRequests.removeValue(forKey: frame.command.error.requestID) {
+            // Map server error code to appropriate client error
+            let error: PulsarClientError
+            switch frame.command.error.error {
+            case .authenticationError, .authorizationError:
+              error = .authorizationFailed(frame.command.error.message)
+            case .metadataError:
+              error = .metadataFailed(frame.command.error.message)
+            case .persistenceError:
+              error = .persistenceFailed(frame.command.error.message)
+            case .checksumError:
+              error = .checksumFailed
+            case .consumerBusy:
+              error = .consumerBusy(frame.command.error.message)
+            case .producerBusy:
+              error = .producerBusy(frame.command.error.message)
+            case .producerBlockedQuotaExceededError:
+              error = .producerBlockedQuotaExceeded
+            case .topicTerminatedError:
+              error = .topicTerminated(frame.command.error.message)
+            case .incompatibleSchema:
+              error = .incompatibleSchema(frame.command.error.message)
+            case .consumerAssignError:
+              error = .consumerAssignFailed(frame.command.error.message)
+            case .notAllowedError:
+              error = .notAllowed(frame.command.error.message)
+            default:
+              error = .protocolError("Server error: \(frame.command.error.message)")
+            }
+            continuation.finish(throwing: error)
+          }
+          
+        case .producerSuccess, .success, .lookupResponse, .partitionedMetadataResponse,
+             .getLastMessageIDResponse, .getSchemaResponse, .newTxnResponse,
+             .addPartitionToTxnResponse, .endTxnResponse, .addSubscriptionToTxnResponse:
+          // These are response frames that complete pending requests
+          if let requestId = getResponseRequestId(from: frame.command),
+             let continuation = pendingRequests.removeValue(forKey: requestId) {
+            logger.debug("Completing request", metadata: [
+              "requestId": "\(requestId)",
+              "responseType": "\(frame.command.type)"
+            ])
+            continuation.yield(frame.command)
+            continuation.finish()
+          } else {
+            logger.warning("Received response without matching request", metadata: [
+              "type": "\(frame.command.type)"
+            ])
+          }
+          
         default:
-          break
+          // Process all other frames through the enhanced handler
+          // This includes server-initiated frames like ping, message, etc.
+          handleIncomingFrame(frame)
         }
-
-        // Process all frames through the enhanced handler
-        // (CONNECTED frames are filtered out by ConnectedFrameHandler during handshake)
-        handleIncomingFrame(frame)
 
         // Exit if connection is no longer active or task is cancelled
         if _state == .closed || _state == .closing || Task.isCancelled {
