@@ -59,7 +59,6 @@ actor Connection: PulsarConnection {
 
   internal var pendingRequests:
     [UInt64: AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.Continuation] = [:]
-  private var connectedHandler: ConnectedFrameHandler?
   private var asyncChannel: NIOAsyncChannel<PulsarFrame, PulsarFrame>?
   private var outboundWriter: NIOAsyncChannelOutboundWriter<PulsarFrame>?
   internal var channelManager: ChannelManager?
@@ -135,22 +134,22 @@ actor Connection: PulsarConnection {
     logger.debug("State updated to connecting")
 
     do {
-      let connectedHandler = ConnectedFrameHandler(connection: self)
-      self.connectedHandler = connectedHandler
-
-      // Set up synchronous CONNECTED handler
-      let connectedSignal = AsyncStream<Void>.makeStream()
-      connectedHandler.setConnectedHandler { [weak self] frame in
-        guard let self = self else { return }
-        Task {
-          self.logger.debug(
-            "CONNECTED handler called - Server version: \(frame.command.connected.serverVersion)")
-          await self.updateState(.connected)
-          await self.setConnectedAt(Date())
-        }
-        connectedSignal.continuation.yield(())
-        connectedSignal.continuation.finish()
+      // Prepare CONNECT command with authentication if provided
+      let connectCommand: Pulsar_Proto_BaseCommand
+      if let auth = authentication {
+        logger.debug("Using authentication")
+        let authData = try await auth.getAuthenticationData()
+        connectCommand = commandBuilder.connect(
+          authMethodName: auth.authenticationMethodName,
+          authData: authData
+        )
+      } else {
+        logger.debug("No authentication required")
+        connectCommand = commandBuilder.connect()
       }
+      
+      logger.debug("Protocol version", metadata: ["version": "\(connectCommand.connect.protocolVersion)"])
+      logger.debug("Client version", metadata: ["version": "\(connectCommand.connect.clientVersion)"])
 
       logger.debug("Establishing TCP connection")
       
@@ -159,7 +158,7 @@ actor Connection: PulsarConnection {
         .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
         .channelOption(ChannelOptions.tcpOption(.tcp_nodelay), value: 1)
         .channelInitializer { channel in
-          self.setupChannelPipeline(channel: channel, connectedHandler: connectedHandler)
+          self.setupChannelPipeline(channel: channel, connectCommand: connectCommand)
         }
       
       let channel = try await bootstrap.connect(host: url.host, port: url.port).get()
@@ -181,66 +180,26 @@ actor Connection: PulsarConnection {
       self.asyncChannel = asyncChannel
       logger.debug("TCP connection established")
 
-      // Start background processing BEFORE sending CONNECT command (like C#)
+      // Start background processing
+      // The ConnectedFrameHandler will handle the handshake internally:
+      // 1. It sends the CONNECT command when channel becomes active
+      // 2. It waits for the CONNECTED response
+      // 3. Only after receiving CONNECTED does it propagate channelActive
+      // 4. This ensures no frames are processed until handshake completes
       startBackgroundProcessing(asyncChannel)
-
-      // Wait for frame processing to actually start
+      
+      // The handler will complete the handshake and then fire channelActive
+      // When channelActive fires, our background processing will start
+      // We just need to wait for our processing to start, which indicates handshake success
       await waitForFrameProcessing()
-
-      // Send CONNECT command with authentication if provided
-      let connectCommand: Pulsar_Proto_BaseCommand
-      if let auth = authentication {
-        logger.debug("Using authentication")
-        let authData = try await auth.getAuthenticationData()
-        connectCommand = commandBuilder.connect(
-          authMethodName: auth.authenticationMethodName,
-          authData: authData
-        )
-      } else {
-        logger.debug("No authentication required")
-        connectCommand = commandBuilder.connect()
-      }
-      let frame = PulsarFrame(command: connectCommand)
-
-      // Debug: Log frame details
-      logger.trace(
-        "CONNECT command details", metadata: ["type": "\(connectCommand.type)", "hasConnect": "\(connectCommand.hasConnect)"]
-      )
-      logger.debug("Protocol version", metadata: ["version": "\(connectCommand.connect.protocolVersion)"])
-      logger.debug("Client version", metadata: ["version": "\(connectCommand.connect.clientVersion)"])
-
-      logger.debug("Sending CONNECT command")
-      try await sendFrame(frame)
-
-      // Wait for CONNECTED response (handled synchronously)
-      logger.trace("Waiting for CONNECTED response")
-      do {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-          group.addTask {
-            for await _ in connectedSignal.stream {
-              // CONNECTED received
-              return
-            }
-            throw PulsarClientError.connectionFailed("CONNECTED stream ended unexpectedly")
-          }
-
-          group.addTask {
-            try await Task.sleep(nanoseconds: 10_000_000_000)  // 10 seconds
-            throw PulsarClientError.timeout("CONNECTED response timeout")
-          }
-
-          try await group.next()!
-          group.cancelAll()
-        }
-        logger.debug("CONNECTED response received successfully")
-        logger.debug("Successfully connected to Pulsar", metadata: ["host": "\(url.host)", "port": "\(url.port)"])
-
-        // Start authentication refresh task if needed
-        startAuthenticationRefreshTask()
-      } catch {
-        logger.error("Connection failed: \(error)")
-        throw error
-      }
+      
+      // At this point, handshake has completed successfully
+      updateState(.connected)
+      connectedAt = Date()
+      logger.debug("Successfully connected to Pulsar", metadata: ["host": "\(url.host)", "port": "\(url.port)"])
+      
+      // Start authentication refresh task if needed
+      startAuthenticationRefreshTask()
 
     } catch {
       logger.error("Connection failed: \(error)")
@@ -339,7 +298,7 @@ actor Connection: PulsarConnection {
   }
 
   private nonisolated func setupChannelPipeline(
-    channel: NIOCore.Channel, connectedHandler: ConnectedFrameHandler
+    channel: NIOCore.Channel, connectCommand: Pulsar_Proto_BaseCommand
   ) -> EventLoopFuture<Void> {
 
     var handlers: [ChannelHandler] = []
@@ -362,7 +321,12 @@ actor Connection: PulsarConnection {
     handlers.append(ByteToMessageHandler(PulsarFrameByteDecoder()))
     handlers.append(MessageToByteHandler(PulsarFrameByteEncoder()))
     
-    // Add the handler that filters out CONNECTED frames
+    // Add the handler that manages connection handshake
+    let connectedHandler = ConnectedFrameHandler(
+      connectCommand: connectCommand,
+      handshakeTimeout: 10.0,
+      logger: logger
+    )
     handlers.append(connectedHandler)
     
     // NIOAsyncChannel will be added after this pipeline setup
@@ -485,13 +449,8 @@ actor Connection: PulsarConnection {
           break
         }
 
-        // CONNECTED is handled synchronously in the frame handler
-        if frame.command.type == .connected {
-          logger.debug("CONNECTED frame in background processing - should have been handled synchronously")
-          continue
-        }
-
-        // Process all other frames through the enhanced handler
+        // Process all frames through the enhanced handler
+        // (CONNECTED frames are filtered out by ConnectedFrameHandler during handshake)
         handleIncomingFrame(frame)
 
         // Exit if connection is no longer active or task is cancelled
@@ -667,89 +626,6 @@ final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
   }
 }
 
-// MARK: - Connection Handler
-// This handler only handles the special CONNECTED frame synchronously
-// All other frames are passed through to the NIOAsyncChannel
-
-final class ConnectedFrameHandler: ChannelInboundHandler, @unchecked Sendable {
-  typealias InboundIn = PulsarFrame
-  typealias InboundOut = PulsarFrame
-
-  private weak var connection: Connection?
-  private var connectedHandler: ((PulsarFrame) -> Void)?
-  private var connectedFrameBuffer: PulsarFrame?
-
-  init(connection: Connection) {
-    self.connection = connection
-  }
-
-  func setConnectedHandler(_ handler: @escaping (PulsarFrame) -> Void) {
-    self.connectedHandler = handler
-    // If we already received CONNECTED, call the handler immediately
-    if let bufferedFrame = connectedFrameBuffer {
-      handler(bufferedFrame)
-      connectedHandler = nil
-      connectedFrameBuffer = nil
-    }
-  }
-
-  func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-    let frame = unwrapInboundIn(data)
-
-    // Special synchronous handling for CONNECTED
-    if frame.command.type == .connected {
-      if let connection = connection {
-        Task {
-          connection.logger.debug(
-            "CONNECTED frame received",
-            metadata: [
-              "serverVersion": "\(frame.command.connected.serverVersion)",
-              "protocolVersion": "\(frame.command.connected.protocolVersion)",
-            ])
-        }
-      }
-
-      // Call synchronous handler if set, otherwise buffer it
-      if let handler = connectedHandler {
-        handler(frame)
-        connectedHandler = nil  // Clear after use
-      } else {
-        // Buffer the CONNECTED frame in case the handler is set later
-        connectedFrameBuffer = frame
-      }
-      return  // Don't pass CONNECTED to the async channel
-    }
-
-    // Pass all other frames through to the async channel
-    context.fireChannelRead(self.wrapInboundOut(frame))
-  }
-
-  func errorCaught(context: ChannelHandlerContext, error: Error) {
-    if let connection {
-      Task {
-        connection.logger.error("ConnectedFrameHandler error", metadata: ["error": "\(error)"])
-      }
-    }
-    context.close(promise: nil)
-  }
-
-  func channelInactive(context: ChannelHandlerContext) { 
-    if let connection {
-      Task {
-        connection.logger.debug("ConnectedFrameHandler channel became inactive")
-      }
-    }
-  }
-
-  func channelActive(context: ChannelHandlerContext) {
-    if let connection {
-      Task {
-        connection.logger.debug("ConnectedFrameHandler channel is active")
-      }
-    }
-    context.fireChannelActive()
-  }
-}
 
 // MARK: - URL Parsing
 
