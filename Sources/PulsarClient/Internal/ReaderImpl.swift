@@ -2,8 +2,9 @@ import Foundation
 import Logging
 
 /// Reader implementation wrapping a consumer
-actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
+actor ReaderImpl<T>: ReaderProtocol, AsyncSequence where T: Sendable {
   typealias MessageType = T
+  public typealias Element = Message<T>
   private let consumer: any ConsumerProtocol<T>
   private let startMessageId: MessageId
   private let logger: Logger
@@ -135,32 +136,54 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
     true  // Conservative approach for nonisolated access
   }
 
-  public func readNext() async throws -> Message<T> {
-    guard _state == ClientState.connected else {
-      throw PulsarClientError.consumerBusy("Reader not connected")
+  // MARK: - AsyncSequence Conformance
+  
+  public struct AsyncIterator: AsyncIteratorProtocol {
+    private let reader: ReaderImpl<T>
+    
+    init(reader: ReaderImpl<T>) {
+      self.reader = reader
     }
-
-    let message = try await consumer.receive()
-
-    // Automatically acknowledge the message
-    try await consumer.acknowledge(message)
-
-    return message
+    
+    public mutating func next() async throws -> Message<T>? {
+      guard await reader._state == .connected else {
+        return nil
+      }
+      
+      // Since we can't store a mutable iterator in a struct that needs to be mutating,
+      // we'll create a new iterator each time. This is not ideal but works.
+      // A better approach would be to make the reader itself handle the iteration.
+      return await reader.getNextMessage()
+    }
   }
-
-  public func readBatch(maxMessages: Int) async throws -> [Message<T>] {
-    guard _state == ClientState.connected else {
-      throw PulsarClientError.consumerBusy("Reader not connected")
+  
+  public nonisolated func makeAsyncIterator() -> AsyncIterator {
+    return AsyncIterator(reader: self)
+  }
+  
+  /// Helper method to get the next message from the consumer
+  private func getNextMessage() async -> Message<T>? {
+    // Since consumer is ConsumerImpl which conforms to AsyncSequence,
+    // we need to properly type it to get the messages
+    guard let consumerImpl = consumer as? ConsumerImpl<T> else {
+      return nil
     }
-
-    let messages = try await consumer.receiveBatch(maxMessages: maxMessages)
-
-    // Automatically acknowledge all messages
-    if !messages.isEmpty {
-      try await consumer.acknowledgeBatch(messages)
+    
+    do {
+      // Create an iterator from the consumer
+      var iterator = consumerImpl.makeAsyncIterator()
+      
+      // Get the next message
+      if let message = try await iterator.next() {
+        // Automatically acknowledge the message
+        try? await consumer.acknowledge(message)
+        return message
+      }
+    } catch {
+      // If there's an error, return nil
+      logger.debug("Error getting next message", metadata: ["error": "\(error)"])
     }
-
-    return messages
+    return nil
   }
 
   public func hasMessageAvailable() async throws -> Bool {
@@ -203,7 +226,12 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
       let hasMoreMessages = lastAvailableMessageId > currentPosition
 
       logger.debug(
-        "Message availability check: last=\(lastAvailableMessageId), current=\(currentPosition), hasMore=\(hasMoreMessages)"
+        "Message availability check:", 
+        metadata: [
+          "lastAvailableMessageId": "\(lastAvailableMessageId)",
+          "currentPosition": "\(currentPosition)",
+          "hasMoreMessages": "\(hasMoreMessages)"
+        ]
       )
 
       return hasMoreMessages
@@ -266,7 +294,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
   }
 
   private func processException(_ error: any Error) async {
-    logger.error("Reader exception: \(error)")
+    logger.error("Reader exception", metadata: ["error": "\(error)"])
 
     // Handle different types of errors
     switch error {

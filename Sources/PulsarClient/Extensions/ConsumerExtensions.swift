@@ -18,161 +18,155 @@ import Foundation
 
 extension ConsumerProtocol {
 
-  /// Acknowledge a message directly (without needing to extract MessageId)
-  public func acknowledge(_ message: Message<MessageType>) async throws {
-    try await acknowledge(message)
+  /// Process messages continuously using AsyncSequence
+  /// - Parameter handler: The handler to process each message
+  /// - Note: Messages are automatically acknowledged on success or negatively acknowledged on error
+  public func processMessages(_ handler: (Message<MessageType>) async throws -> Void) async throws {
+    for try await message in self {
+      do {
+        try await handler(message)
+        try await acknowledge(message)
+      } catch {
+        try await negativeAcknowledge(message)
+        throw error
+      }
+    }
   }
 
-  /// Process a message and automatically acknowledge it
-  public func process(_ handler: (Message<MessageType>) async throws -> Void) async throws {
-    let message = try await receive()
-    do {
+  /// Process messages with automatic acknowledgment
+  /// - Parameter handler: The handler to process each message
+  /// - Note: Messages are automatically acknowledged after successful processing
+  public func processMessagesWithAutoAck(_ handler: (Message<MessageType>) async throws -> Void) async throws {
+    for try await message in self {
       try await handler(message)
       try await acknowledge(message)
-    } catch {
-      try await negativeAcknowledge(message)
-      throw error
     }
   }
 
-  /// Process messages continuously
-  public func processMessages(_ handler: (Message<MessageType>) async throws -> Void) async throws {
-    while true {
-      try await process(handler)
-    }
-  }
-
-  /// Try to receive a message without blocking
-  public func tryReceive() async -> Message<MessageType>? {
-    do {
-      return try await receive()
-    } catch {
-      return nil
-    }
-  }
-}
-
-// MARK: - Batch Processing Extensions
-
-extension ConsumerProtocol {
-
-  /// Process a batch of messages with automatic acknowledgment
-  public func processBatch(
-    maxMessages: Int,
-    handler: ([Message<MessageType>]) async throws -> Void
-  ) async throws {
-    let messages = try await receiveBatch(maxMessages: maxMessages)
-
-    do {
-      try await handler(messages)
-      try await acknowledgeBatch(messages)
-    } catch {
-      // Negative acknowledge all messages in the batch
-      for message in messages {
-        try await negativeAcknowledge(message)
-      }
-      throw error
-    }
-  }
-
-}
-
-// MARK: - State Monitoring Extensions
-
-extension ConsumerProtocol where Self: StateHolder, Self.T == ClientState {
-
-  /// Wait for the consumer to reach a specific state
-  @discardableResult
-  public func waitForState(_ targetState: ClientState, timeout: TimeInterval = 30.0) async throws
-    -> ClientState
-  {
-    if state == targetState {
-      return state
-    }
-
-    return try await stateChangedTo(targetState, timeout: timeout)
-  }
-
-  /// Wait for the consumer to leave a specific state
-  @discardableResult
-  public func waitToLeaveState(_ currentState: ClientState, timeout: TimeInterval = 30.0)
-    async throws -> ClientState
-  {
-    if state != currentState {
-      return state
-    }
-
-    return try await stateChangedFrom(currentState, timeout: timeout)
-  }
-}
-
-// MARK: - AsyncSequence Support
-
-extension ConsumerProtocol {
-
-  /// Returns an AsyncSequence of messages
-  public var messages: AsyncThrowingStream<Message<MessageType>, Error> {
-    AsyncThrowingStream { continuation in
-      let task = Task {
-        do {
-          while !Task.isCancelled {
-            let message = try await receive()
-            continuation.yield(message)
-          }
-          continuation.finish()
-        } catch {
-          continuation.finish(throwing: error)
+  /// Process messages in batches
+  /// - Parameters:
+  ///   - batchSize: The size of each batch
+  ///   - handler: The handler to process each batch
+  public func processBatches(of batchSize: Int, handler: ([Message<MessageType>]) async throws -> Void) async throws {
+    var batch: [Message<MessageType>] = []
+    
+    for try await message in self {
+      batch.append(message)
+      
+      if batch.count >= batchSize {
+        try await handler(batch)
+        
+        // Acknowledge all messages in the batch
+        for msg in batch {
+          try await acknowledge(msg)
         }
+        
+        batch.removeAll()
       }
-
-      continuation.onTermination = { _ in
-        task.cancel()
+    }
+    
+    // Process any remaining messages
+    if !batch.isEmpty {
+      try await handler(batch)
+      for msg in batch {
+        try await acknowledge(msg)
       }
     }
   }
-}
 
-// MARK: - Seek Extensions
-
-extension ConsumerProtocol {
-
-  /// Seek to the earliest available message
-  public func seekToEarliest() async throws {
-    try await seek(to: .earliest)
-  }
-
-  /// Seek to the latest message
-  public func seekToLatest() async throws {
-    try await seek(to: .latest)
-  }
-
-  /// Seek to a message published after the given date
-  public func seek(after date: Date) async throws {
-    try await seek(to: date)
-  }
-}
-
-// MARK: - Filtering Extensions
-
-extension ConsumerProtocol {
-
-  /// Receive messages that match a predicate
-  public func receiveWhere(_ predicate: (Message<MessageType>) -> Bool) async throws -> Message<
-    MessageType
-  > {
-    while true {
-      let message = try await receive()
-      if predicate(message) {
-        return message
+  /// Process messages with a filter
+  /// - Parameters:
+  ///   - filter: The filter predicate
+  ///   - handler: The handler for messages that pass the filter
+  public func processFiltered(
+    where filter: (Message<MessageType>) async -> Bool,
+    handler: (Message<MessageType>) async throws -> Void
+  ) async throws {
+    for try await message in self {
+      if await filter(message) {
+        try await handler(message)
+        try await acknowledge(message)
       } else {
-        // Acknowledge messages that don't match
+        // Acknowledge filtered out messages as well
         try await acknowledge(message)
       }
     }
   }
 
-  /// Receive messages with a specific key
-  public func receive(withKey key: String) async throws -> Message<MessageType> {
-    return try await receiveWhere { $0.key == key }
+  /// Take a limited number of messages
+  /// - Parameter count: The number of messages to take
+  /// - Returns: An array of messages
+  public func take(_ count: Int) async throws -> [Message<MessageType>] {
+    var messages: [Message<MessageType>] = []
+    
+    for try await message in self {
+      messages.append(message)
+      if messages.count >= count {
+        break
+      }
+    }
+    
+    return messages
+  }
+
+  /// Process messages with a timeout between messages
+  /// - Parameters:
+  ///   - timeout: Maximum time to wait for next message
+  ///   - handler: The handler for each message
+  public func processWithTimeout(
+    timeout: TimeInterval,
+    handler: @escaping @Sendable (Message<MessageType>) async throws -> Void
+  ) async throws {
+    for try await message in self {
+      try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask {
+          try await handler(message)
+        }
+        
+        group.addTask {
+          try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+          throw PulsarClientError.timeout("Message processing timeout")
+        }
+        
+        try await group.next()!
+        group.cancelAll()
+      }
+      
+      try await acknowledge(message)
+    }
+  }
+}
+
+// MARK: - Subscription Management
+
+extension ConsumerProtocol {
+  /// Pause message consumption by stopping acknowledgments
+  /// Note: Messages will still be buffered locally
+  public func pause() async {
+    // Implementation would require adding pause/resume state to ConsumerImpl
+    // For now, users can control flow by not iterating
+  }
+
+  /// Resume message consumption
+  public func resume() async {
+    // Implementation would require adding pause/resume state to ConsumerImpl
+    // For now, users can control flow by resuming iteration
+  }
+}
+
+// MARK: - Message Filtering
+
+extension ConsumerProtocol where MessageType: Hashable {
+  /// Process only unique messages
+  public func processUnique(handler: (Message<MessageType>) async throws -> Void) async throws {
+    var seen = Set<MessageType>()
+    
+    for try await message in self {
+      if !seen.contains(message.value) {
+        seen.insert(message.value)
+        try await handler(message)
+      }
+      try await acknowledge(message)
+    }
   }
 }

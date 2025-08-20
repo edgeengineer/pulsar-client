@@ -17,153 +17,159 @@ import Foundation
 // MARK: - Reader Convenience Extensions
 
 extension ReaderProtocol {
-
+  
   /// Read all available messages
+  /// - Returns: An array of all available messages
   public func readAll() async throws -> [Message<MessageType>] {
     var messages: [Message<MessageType>] = []
-
-    while try await hasMessageAvailable() {
-      let message = try await readNext()
+    
+    for try await message in self {
       messages.append(message)
+      
+      // Check if more messages are available
+      if try await !hasMessageAvailable() {
+        break
+      }
     }
-
+    
     return messages
   }
-
+  
   /// Read messages until a condition is met
-  public func readUntil(_ predicate: (Message<MessageType>) -> Bool) async throws -> [Message<
-    MessageType
-  >] {
+  /// - Parameter condition: The condition to stop reading
+  /// - Returns: An array of messages read before the condition was met
+  public func readUntil(_ condition: (Message<MessageType>) -> Bool) async throws -> [Message<MessageType>] {
     var messages: [Message<MessageType>] = []
-
-    while try await hasMessageAvailable() {
-      let message = try await readNext()
+    
+    for try await message in self {
+      if condition(message) {
+        break
+      }
       messages.append(message)
-
-      if predicate(message) {
-        break
-      }
     }
-
+    
     return messages
   }
-
-  /// Read a specific number of messages
-  public func read(count: Int) async throws -> [Message<MessageType>] {
+  
+  /// Read messages for a specific duration
+  /// - Parameter duration: The duration to read messages for
+  /// - Returns: An array of messages read during the duration
+  public func readFor(duration: TimeInterval) async throws -> [Message<MessageType>] {
     var messages: [Message<MessageType>] = []
-
-    for _ in 0..<count {
-      if try await hasMessageAvailable() {
-        let message = try await readNext()
-        messages.append(message)
-      } else {
+    let endTime = Date().addingTimeInterval(duration)
+    
+    for try await message in self {
+      messages.append(message)
+      
+      if Date() >= endTime {
         break
       }
     }
-
+    
+    return messages
+  }
+  
+  /// Process messages with a handler
+  /// - Parameter handler: The handler to process each message
+  public func process(_ handler: (Message<MessageType>) async throws -> Void) async throws {
+    for try await message in self {
+      try await handler(message)
+    }
+  }
+  
+  /// Read messages with filtering
+  /// - Parameter filter: The filter predicate
+  /// - Returns: An array of messages that pass the filter
+  public func readFiltered(where filter: (Message<MessageType>) -> Bool) async throws -> [Message<MessageType>] {
+    var messages: [Message<MessageType>] = []
+    
+    for try await message in self {
+      if filter(message) {
+        messages.append(message)
+      }
+    }
+    
+    return messages
+  }
+  
+  /// Skip a number of messages
+  /// - Parameter count: The number of messages to skip
+  public func skip(_ count: Int) async throws {
+    var skipped = 0
+    
+    for try await _ in self {
+      skipped += 1
+      if skipped >= count {
+        break
+      }
+    }
+  }
+  
+  /// Take a limited number of messages
+  /// - Parameter count: The number of messages to take
+  /// - Returns: An array of messages
+  public func take(_ count: Int) async throws -> [Message<MessageType>] {
+    var messages: [Message<MessageType>] = []
+    
+    for try await message in self {
+      messages.append(message)
+      if messages.count >= count {
+        break
+      }
+    }
+    
     return messages
   }
 }
 
-// MARK: - State Monitoring Extensions
-
-extension ReaderProtocol where Self: StateHolder, Self.T == ClientState {
-
-  /// Wait for the reader to reach a specific state
-  @discardableResult
-  public func waitForState(_ targetState: ClientState, timeout: TimeInterval = 30.0) async throws
-    -> ClientState
-  {
-    if state == targetState {
-      return state
-    }
-
-    return try await stateChangedTo(targetState, timeout: timeout)
-  }
-
-  /// Wait for the reader to leave a specific state
-  @discardableResult
-  public func waitToLeaveState(_ currentState: ClientState, timeout: TimeInterval = 30.0)
-    async throws -> ClientState
-  {
-    if state != currentState {
-      return state
-    }
-
-    return try await stateChangedFrom(currentState, timeout: timeout)
-  }
-}
-
-// MARK: - AsyncSequence Support
+// MARK: - Position Management
 
 extension ReaderProtocol {
-
-  /// Returns an AsyncSequence of messages
-  public var messages: AsyncThrowingStream<Message<MessageType>, Error> {
-    AsyncThrowingStream { continuation in
-      let task = Task {
-        do {
-          while !Task.isCancelled {
-            let hasMessage = try await hasMessageAvailable()
-            if !hasMessage {
-              break
-            }
-            let message = try await readNext()
-            continuation.yield(message)
-          }
-          continuation.finish()
-        } catch {
-          continuation.finish(throwing: error)
-        }
-      }
-
-      continuation.onTermination = { _ in
-        task.cancel()
-      }
+  /// Reset to the beginning of the topic
+  public func seekToBeginning() async throws {
+    try await seek(to: MessageId.earliest)
+  }
+  
+  /// Skip to the end of the topic
+  public func seekToEnd() async throws {
+    try await seek(to: MessageId.latest)
+  }
+  
+  /// Seek to a specific time and read messages from there
+  /// - Parameters:
+  ///   - timestamp: The timestamp to seek to
+  ///   - handler: The handler for messages after the timestamp
+  public func readFrom(timestamp: Date, handler: (Message<MessageType>) async throws -> Void) async throws {
+    try await seek(to: timestamp)
+    
+    for try await message in self {
+      try await handler(message)
     }
   }
 }
 
-// MARK: - Seek Extensions
+// MARK: - Batch Reading
 
 extension ReaderProtocol {
-
-  /// Seek to the earliest available message
-  public func seekToEarliest() async throws {
-    try await seek(to: .earliest)
-  }
-
-  /// Seek to the latest message
-  public func seekToLatest() async throws {
-    try await seek(to: .latest)
-  }
-
-  /// Seek to a message published after the given date
-  public func seek(after date: Date) async throws {
-    try await seek(to: date)
-  }
-}
-
-// MARK: - Filtering Extensions
-
-extension ReaderProtocol {
-
-  /// Read messages that match a predicate
-  public func readWhere(_ predicate: (Message<MessageType>) -> Bool) async throws -> Message<
-    MessageType
-  > {
-    while try await hasMessageAvailable() {
-      let message = try await readNext()
-      if predicate(message) {
-        return message
+  /// Read messages in batches
+  /// - Parameters:
+  ///   - batchSize: The size of each batch
+  ///   - handler: The handler for each batch
+  public func readBatches(of batchSize: Int, handler: ([Message<MessageType>]) async throws -> Void) async throws {
+    var batch: [Message<MessageType>] = []
+    
+    for try await message in self {
+      batch.append(message)
+      
+      if batch.count >= batchSize {
+        try await handler(batch)
+        batch.removeAll()
       }
     }
-
-    throw PulsarClientError.readerClosed
-  }
-
-  /// Read messages with a specific key
-  public func read(withKey key: String) async throws -> Message<MessageType> {
-    return try await readWhere { $0.key == key }
+    
+    // Process any remaining messages
+    if !batch.isEmpty {
+      try await handler(batch)
+    }
   }
 }
