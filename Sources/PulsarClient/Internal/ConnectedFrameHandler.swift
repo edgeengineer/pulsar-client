@@ -13,7 +13,7 @@ final class ConnectedFrameHandler: ChannelDuplexHandler, @unchecked Sendable {
     
     private let logger: Logger
     private let connectCommand: Pulsar_Proto_BaseCommand
-    private let handshakeTimeout: TimeInterval
+    private let handshakeTimeout: TimeAmount
     
     private var handshakeCompleted = false
     private var handshakePromise: EventLoopPromise<Void>?
@@ -26,7 +26,7 @@ final class ConnectedFrameHandler: ChannelDuplexHandler, @unchecked Sendable {
     
     init(
         connectCommand: Pulsar_Proto_BaseCommand,
-        handshakeTimeout: TimeInterval = 10.0,
+        handshakeTimeout: TimeAmount = TimeAmount.seconds(10),
         logger: Logger
     ) {
         self.connectCommand = connectCommand
@@ -48,11 +48,10 @@ final class ConnectedFrameHandler: ChannelDuplexHandler, @unchecked Sendable {
         handshakePromise = eventLoop.makePromise(of: Void.self)
         
         // Set up timeout for handshake
-        timeoutTask = eventLoop.scheduleTask(in: .seconds(Int64(handshakeTimeout))) { [weak self] in
-            guard let self = self else { return }
-            if !self.handshakeCompleted {
-                self.logger.error("Handshake timeout after \(self.handshakeTimeout) seconds")
-                self.handshakePromise?.fail(PulsarClientError.timeout("CONNECTED response timeout"))
+        timeoutTask = eventLoop.scheduleTask(in: handshakeTimeout) { [handshakeCompleted, logger, handshakePromise] in
+            if !handshakeCompleted {
+                logger.error("Handshake timeout after \(self.handshakeTimeout) seconds")
+                handshakePromise?.fail(PulsarClientError.timeout("CONNECTED response timeout"))
                 channel.close(promise: nil)
             }
         }
@@ -64,14 +63,12 @@ final class ConnectedFrameHandler: ChannelDuplexHandler, @unchecked Sendable {
         
         // Don't propagate channelActive until handshake completes
         // This ensures the Connection doesn't start processing until we're ready
-        handshakePromise?.futureResult.whenSuccess { [weak self] in
-            guard let self = self else { return }
-            self.logger.debug("Handshake completed, propagating channelActive")
+        handshakePromise?.futureResult.whenSuccess { [logger] in
+            logger.debug("Handshake completed, propagating channelActive")
         }
         
-        handshakePromise?.futureResult.whenFailure { [weak self] error in
-            guard let self = self else { return }
-            self.logger.error("Handshake failed", metadata: ["error": "\(error)"])
+        handshakePromise?.futureResult.whenFailure { [logger, channel] error in
+            logger.error("Handshake failed", metadata: ["error": "\(error)"])
             // Fire error and close channel
             channel.close(promise: nil)
         }

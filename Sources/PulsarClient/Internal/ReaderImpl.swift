@@ -226,7 +226,7 @@ actor ReaderImpl<T>: ReaderProtocol, AsyncSequence where T: Sendable {
       let hasMoreMessages = lastAvailableMessageId > currentPosition
 
       logger.debug(
-        "Message availability check:", 
+        "Message availability check", 
         metadata: [
           "lastAvailableMessageId": "\(lastAvailableMessageId)",
           "currentPosition": "\(currentPosition)",

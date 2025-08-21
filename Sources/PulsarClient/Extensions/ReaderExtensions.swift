@@ -91,35 +91,6 @@ extension ReaderProtocol {
     
     return messages
   }
-  
-  /// Skip a number of messages
-  /// - Parameter count: The number of messages to skip
-  public func skip(_ count: Int) async throws {
-    var skipped = 0
-    
-    for try await _ in self {
-      skipped += 1
-      if skipped >= count {
-        break
-      }
-    }
-  }
-  
-  /// Take a limited number of messages
-  /// - Parameter count: The number of messages to take
-  /// - Returns: An array of messages
-  public func take(_ count: Int) async throws -> [Message<MessageType>] {
-    var messages: [Message<MessageType>] = []
-    
-    for try await message in self {
-      messages.append(message)
-      if messages.count >= count {
-        break
-      }
-    }
-    
-    return messages
-  }
 }
 
 // MARK: - Position Management
