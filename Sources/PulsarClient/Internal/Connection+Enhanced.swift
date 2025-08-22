@@ -653,7 +653,7 @@ extension Connection {
       guard let self = self else {
         throw PulsarClientError.connectionFailed("Connection deallocated")
       }
-      try await self.connect()
+      try await self.run()
     }
   }
 }
@@ -662,29 +662,23 @@ extension Connection {
 
 extension Connection {
 
-  /// Reconnect to the broker with fault tolerance
-  func reconnect() async throws {
-    logger.debug("Starting connection reconnection")
-
-    // Update state to reconnecting
-    updateState(.reconnecting)
-
-    try await executeWithFaultTolerance(operation: "reconnect") { [weak self] in
-      guard let self = self else {
-        throw PulsarClientError.connectionFailed("Connection deallocated")
-      }
-
-      // Close existing connection
-      await self.close()
-
-      // Attempt to reconnect
-      try await self.connect()
-
-      // Re-establish all channels
-      await self.channelManager?.reconnectAll()
-
-      self.logger.debug("Connection reconnection completed successfully")
-    }
+  /// Mark connection as failed to trigger reconnection through pool
+  /// 
+  /// Note: Direct reconnection is not supported with the new architecture.
+  /// The ConnectionPool will detect the failed state and create a new connection.
+  func markForReconnection(error: Error? = nil) async {
+    logger.debug("Marking connection for reconnection", metadata: [
+      "error": error.map { "\($0)" } ?? "none"
+    ])
+    
+    // Update state to faulted to signal the pool to create a new connection
+    let failureError = error ?? PulsarClientError.connectionFailed("Connection marked for reconnection")
+    updateState(.faulted(failureError))
+    
+    // Close the connection to clean up resources
+    await close()
+    
+    logger.debug("Connection marked for reconnection - pool will create new connection")
   }
 
   /// Start automatic reconnection monitoring
@@ -774,17 +768,10 @@ extension Connection {
     }
   }
 
-  /// Attempt automatic reconnection
+  /// Attempt automatic reconnection by marking connection for pool recreation
   private func attemptReconnection() async {
-    do {
-      try await reconnect()
-    } catch {
-      logger.error("Automatic reconnection failed: \(error)")
-      updateState(.faulted(error))
-
-      // Wait before next attempt
-      try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5 seconds
-    }
+    logger.debug("Triggering reconnection through connection pool")
+    await markForReconnection(error: PulsarClientError.connectionFailed("Connection health check failed"))
   }
 
   /// Get connection statistics for monitoring

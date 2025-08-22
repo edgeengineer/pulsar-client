@@ -40,10 +40,27 @@ actor ConnectionPool {
       case .connected:
         return existingConnection
       case .faulted, .closed:
-        // Remove the failed connection
+        // Remove the failed connection and create a new one
+        logger.debug("Removing failed connection, will create new one", metadata: ["brokerUrl": "\(brokerUrl)"])
         connections.removeValue(forKey: brokerUrl)
+        await existingConnection.close()
+        // Fall through to create new connection
+      case .connecting:
+        // Wait for connection to establish
+        for _ in 0..<30 {  // Max 3 seconds wait
+          let currentState = await existingConnection.state
+          if currentState == .connected {
+            return existingConnection
+          } else if case .faulted = currentState {
+            break  // Will remove and recreate
+          }
+          try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        }
+        // If still not connected, remove and recreate
+        connections.removeValue(forKey: brokerUrl)
+        await existingConnection.close()
       default:
-        // Wait for connection to complete
+        // For other states, return existing and let caller handle
         return existingConnection
       }
     }
@@ -55,14 +72,31 @@ actor ConnectionPool {
       encryptionPolicy: encryptionPolicy, authRefreshInterval: authRefreshInterval)
     connections[brokerUrl] = connection
 
-    do {
-      try await connection.connect()
-      return connection
-    } catch {
-      // Remove failed connection
-      connections.removeValue(forKey: brokerUrl)
-      throw error
+    // Start the connection in a background task
+    Task {
+      do {
+        try await connection.run()
+      } catch {
+        logger.error("Connection failed", metadata: ["error": "\(error)"])
+        // Connection will handle its own state updates
+      }
     }
+    
+    // Wait for connection to be established
+    for _ in 0..<50 {  // Max 5 seconds wait
+      let state = await connection.state
+      if state == .connected {
+        return connection
+      } else if case .faulted = state {
+        connections.removeValue(forKey: brokerUrl)
+        throw PulsarClientError.connectionFailed("Connection failed to establish")
+      }
+      try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+    }
+    
+    // Timeout
+    connections.removeValue(forKey: brokerUrl)
+    throw PulsarClientError.timeout("Connection establishment timeout")
   }
 
   /// Close all connections
