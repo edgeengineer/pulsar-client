@@ -138,52 +138,46 @@ actor ReaderImpl<T>: ReaderProtocol, AsyncSequence where T: Sendable {
 
   // MARK: - AsyncSequence Conformance
   
-  public struct AsyncIterator: AsyncIteratorProtocol {
-    private let reader: ReaderImpl<T>
+  /// Type-erased wrapper for consumer iterators
+  private final class AnyAsyncIterator<MessageType: Sendable>: AsyncIteratorProtocol {
+    private var nextClosure: () async throws -> Message<MessageType>?
+    
+    init<C: ConsumerProtocol>(_ consumer: C) where C.MessageType == MessageType {
+      var iterator = consumer.makeAsyncIterator()
+      self.nextClosure = {
+        try await iterator.next()
+      }
+    }
+    
+    func next() async throws -> Message<MessageType>? {
+      return try await nextClosure()
+    }
+  }
+  
+  public final class AsyncIterator: AsyncIteratorProtocol {
+    private var reader: ReaderImpl<T>
+    private var consumerIterator: AnyAsyncIterator<T>?
     
     init(reader: ReaderImpl<T>) {
       self.reader = reader
     }
     
-    public mutating func next() async throws -> Message<T>? {
+    public func next() async throws -> Message<T>? {
       guard await reader._state == .connected else {
         return nil
       }
       
-      // Since we can't store a mutable iterator in a struct that needs to be mutating,
-      // we'll create a new iterator each time. This is not ideal but works.
-      // A better approach would be to make the reader itself handle the iteration.
-      return await reader.getNextMessage()
+      // Initialize iterator on first use
+      if consumerIterator == nil {
+        consumerIterator = AnyAsyncIterator(reader.consumer)
+      }
+      
+      return try await consumerIterator?.next()
     }
   }
   
   public nonisolated func makeAsyncIterator() -> AsyncIterator {
     return AsyncIterator(reader: self)
-  }
-  
-  /// Helper method to get the next message from the consumer
-  private func getNextMessage() async -> Message<T>? {
-    // Since consumer is ConsumerImpl which conforms to AsyncSequence,
-    // we need to properly type it to get the messages
-    guard let consumerImpl = consumer as? ConsumerImpl<T> else {
-      return nil
-    }
-    
-    do {
-      // Create an iterator from the consumer
-      var iterator = consumerImpl.makeAsyncIterator()
-      
-      // Get the next message
-      if let message = try await iterator.next() {
-        // Automatically acknowledge the message
-        try? await consumer.acknowledge(message)
-        return message
-      }
-    } catch {
-      // If there's an error, return nil
-      logger.debug("Error getting next message", metadata: ["error": "\(error)"])
-    }
-    return nil
   }
 
   public func hasMessageAvailable() async throws -> Bool {

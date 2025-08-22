@@ -16,16 +16,25 @@ import Foundation
 
 // MARK: - Consumer Convenience Extensions
 
+public enum MessageProcessingResult {
+  case acknowledge
+  case ignore
+}
+
 extension ConsumerProtocol {
 
   /// Process messages continuously using AsyncSequence
-  /// - Parameter handler: The handler to process each message
-  /// - Note: Messages are automatically acknowledged on success or negatively acknowledged on error
-  public func processMessages(_ handler: (Message<MessageType>) async throws -> Void) async throws {
+  /// - Parameter handler: The handler to process each message and return processing result
+  /// - Note: Messages are handled based on the returned result
+  public func processMessages(_ handler: (Message<MessageType>) async throws -> MessageProcessingResult) async throws {
     for try await message in self {
       do {
-        try await handler(message)
-        try await acknowledge(message)
+        switch try await handler(message) {
+        case .acknowledge:
+          try await acknowledge(message)
+        case .ignore:
+          continue
+        }
       } catch {
         try await negativeAcknowledge(message)
         throw error

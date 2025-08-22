@@ -217,7 +217,7 @@ actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
                 var msg = message
                 
                 // Process message
-                await consumer.processReceivedMessage(&msg)
+                try await consumer.processReceivedMessage(&msg)
                 return msg
             }
             
@@ -230,13 +230,21 @@ actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
     }
     
     /// Process a received message (decrement counts, apply interceptors, etc.)
-    private func processReceivedMessage(_ message: inout Message<T>) async {
+    private func processReceivedMessage(_ message: inout Message<T>) async throws {
         // Decrement buffered count since we're delivering a message
         bufferedMessageCount = Swift.max(0, bufferedMessageCount - 1)
         
         // Process through interceptors if configured
         if let interceptors = interceptors {
-            message = try! await interceptors.beforeConsume(consumer: self, message: message)
+            do {
+                message = try await interceptors.beforeConsume(consumer: self, message: message)
+            } catch {
+                logger.error("Interceptor failed during beforeConsume", metadata: [
+                    "messageId": "\(message.id)",
+                    "error": "\(error)"
+                ])
+                throw error
+            }
         }
         
         // Request more permits if we're running low

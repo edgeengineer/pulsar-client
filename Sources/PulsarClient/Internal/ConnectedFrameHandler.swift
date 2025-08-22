@@ -34,6 +34,16 @@ final class ConnectedFrameHandler: ChannelDuplexHandler, @unchecked Sendable {
         self.logger = logger
     }
     
+    deinit {
+        // Cancel any pending timeout task
+        timeoutTask?.cancel()
+        
+        // Fail the promise if it hasn't been completed yet
+        if let handshakePromise {
+            handshakePromise.fail(PulsarClientError.connectionFailed("ConnectedFrameHandler deallocated before handshake completed"))
+        }
+    }
+    
     // MARK: - Inbound Handler
     
     func channelActive(context: ChannelHandlerContext) {
