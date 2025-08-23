@@ -298,56 +298,59 @@ extension Connection {
   }
 
   private func handlePing() {
-    Task {
-      let pong = commandBuilder.pong()
+    Task { [weak self] in
+      guard let self = self else { return }
+      let pong = await self.commandBuilder.pong()
       let frame = PulsarFrame(command: pong)
-      try? await sendFrame(frame)
-      logger.trace("Sent PONG in response to PING")
+      try? await self.sendFrame(frame)
+      self.logger.trace("Sent PONG in response to PING")
     }
   }
 
   private func handleMessage(_ message: Pulsar_Proto_CommandMessage, frame: PulsarFrame) {
-    Task {
+    Task { [weak self] in
+      guard let self = self else { return }
       guard let metadata = frame.metadata, let payload = frame.payload else {
-        logger.debug("Received message without metadata or payload")
+        self.logger.debug("Received message without metadata or payload")
         return
       }
 
-      await channelManager?.handleIncomingMessage(message, payload: payload, metadata: metadata)
+      await self.channelManager?.handleIncomingMessage(message, payload: payload, metadata: metadata)
     }
   }
 
   private func handleSendReceipt(_ receipt: Pulsar_Proto_CommandSendReceipt) {
     logger.trace(
       "Received SendReceipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"])
-    Task {
+    Task { [weak self] in
+      guard let self = self else { return }
       // Forward to the producer channel
-      if let producerChannel = await channelManager?.getProducer(id: receipt.producerID) {
-        logger.trace(
+      if let producerChannel = await self.channelManager?.getProducer(id: receipt.producerID) {
+        self.logger.trace(
           "Found producer channel, forwarding receipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"]
         )
         await producerChannel.handleSendReceipt(receipt)
       } else {
-        logger.debug("Received send receipt for unknown producer", metadata: ["producerId": "\(receipt.producerID)"])
+        self.logger.debug("Received send receipt for unknown producer", metadata: ["producerId": "\(receipt.producerID)"])
       }
     }
   }
 
   private func handleActiveConsumerChange(_ change: Pulsar_Proto_CommandActiveConsumerChange) {
-    Task {
-      await channelManager?.handleActiveConsumerChange(change)
+    Task { [weak self] in
+      await self?.channelManager?.handleActiveConsumerChange(change)
     }
   }
 
   private func handleCloseProducer(_ close: Pulsar_Proto_CommandCloseProducer) {
-    Task {
-      await channelManager?.handleCloseProducer(close)
+    Task { [weak self] in
+      await self?.channelManager?.handleCloseProducer(close)
     }
   }
 
   private func handleCloseConsumer(_ close: Pulsar_Proto_CommandCloseConsumer) {
-    Task {
-      await channelManager?.handleCloseConsumer(close)
+    Task { [weak self] in
+      await self?.channelManager?.handleCloseConsumer(close)
     }
   }
 
@@ -366,15 +369,16 @@ extension Connection {
   }
 
   private func handleAuthChallenge(_ challenge: Pulsar_Proto_CommandAuthChallenge) {
-    Task {
+    Task { [weak self] in
+      guard let self = self else { return }
       do {
-        guard let auth = authentication else {
-          logger.error("Received auth challenge but no authentication configured")
+        guard let auth = self.authentication else {
+          self.logger.error("Received auth challenge but no authentication configured")
           await self.close()
           return
         }
 
-        logger.debug("Responding to authentication challenge")
+        self.logger.debug("Responding to authentication challenge")
 
         // Get response data from authentication provider
         let responseData = try await auth.handleAuthenticationChallenge(challenge)
@@ -385,14 +389,14 @@ extension Connection {
         authData.authData = responseData
 
         // Send auth response
-        let authResponse = commandBuilder.authResponse(response: authData)
+        let authResponse = await self.commandBuilder.authResponse(response: authData)
         let frame = PulsarFrame(command: authResponse)
 
-        try await sendFrame(frame)
-        logger.debug("Sent authentication response")
+        try await self.sendFrame(frame)
+        self.logger.debug("Sent authentication response")
 
       } catch {
-        logger.error("Failed to handle auth challenge: \(error)")
+        self.logger.error("Failed to handle auth challenge: \(error)")
         await self.close()
       }
     }
@@ -649,7 +653,7 @@ extension Connection {
       guard let self = self else {
         throw PulsarClientError.connectionFailed("Connection deallocated")
       }
-      try await self.connect()
+      try await self.run()
     }
   }
 }
@@ -658,29 +662,23 @@ extension Connection {
 
 extension Connection {
 
-  /// Reconnect to the broker with fault tolerance
-  func reconnect() async throws {
-    logger.debug("Starting connection reconnection")
-
-    // Update state to reconnecting
-    updateState(.reconnecting)
-
-    try await executeWithFaultTolerance(operation: "reconnect") { [weak self] in
-      guard let self = self else {
-        throw PulsarClientError.connectionFailed("Connection deallocated")
-      }
-
-      // Close existing connection
-      await self.close()
-
-      // Attempt to reconnect
-      try await self.connect()
-
-      // Re-establish all channels
-      await self.channelManager?.reconnectAll()
-
-      self.logger.debug("Connection reconnection completed successfully")
-    }
+  /// Mark connection as failed to trigger reconnection through pool
+  /// 
+  /// Note: Direct reconnection is not supported with the new architecture.
+  /// The ConnectionPool will detect the failed state and create a new connection.
+  func markForReconnection(error: Error? = nil) async {
+    logger.debug("Marking connection for reconnection", metadata: [
+      "error": error.map { "\($0)" } ?? "none"
+    ])
+    
+    // Update state to faulted to signal the pool to create a new connection
+    let failureError = error ?? PulsarClientError.connectionFailed("Connection marked for reconnection")
+    updateState(.faulted(failureError))
+    
+    // Close the connection to clean up resources
+    await close()
+    
+    logger.debug("Connection marked for reconnection - pool will create new connection")
   }
 
   /// Start automatic reconnection monitoring
@@ -689,8 +687,8 @@ extension Connection {
     healthMonitoringTask?.cancel()
 
     // Create and store new monitoring task
-    healthMonitoringTask = Task {
-      await monitorConnectionHealth()
+    healthMonitoringTask = Task { [weak self] in
+      await self?.monitorConnectionHealth()
     }
   }
 
@@ -770,17 +768,10 @@ extension Connection {
     }
   }
 
-  /// Attempt automatic reconnection
+  /// Attempt automatic reconnection by marking connection for pool recreation
   private func attemptReconnection() async {
-    do {
-      try await reconnect()
-    } catch {
-      logger.error("Automatic reconnection failed: \(error)")
-      updateState(.faulted(error))
-
-      // Wait before next attempt
-      try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5 seconds
-    }
+    logger.debug("Triggering reconnection through connection pool")
+    await markForReconnection(error: PulsarClientError.connectionFailed("Connection health check failed"))
   }
 
   /// Get connection statistics for monitoring

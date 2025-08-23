@@ -2,8 +2,9 @@ import Foundation
 import Logging
 
 /// Reader implementation wrapping a consumer
-actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
+actor ReaderImpl<T>: ReaderProtocol, AsyncSequence where T: Sendable {
   typealias MessageType = T
+  public typealias Element = Message<T>
   private let consumer: any ConsumerProtocol<T>
   private let startMessageId: MessageId
   private let logger: Logger
@@ -135,32 +136,48 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
     true  // Conservative approach for nonisolated access
   }
 
-  public func readNext() async throws -> Message<T> {
-    guard _state == ClientState.connected else {
-      throw PulsarClientError.consumerBusy("Reader not connected")
+  // MARK: - AsyncSequence Conformance
+  
+  /// Type-erased wrapper for consumer iterators
+  private final class AnyAsyncIterator<MessageType: Sendable>: AsyncIteratorProtocol {
+    private var nextClosure: () async throws -> Message<MessageType>?
+    
+    init<C: ConsumerProtocol>(_ consumer: C) where C.MessageType == MessageType {
+      var iterator = consumer.makeAsyncIterator()
+      self.nextClosure = {
+        try await iterator.next()
+      }
     }
-
-    let message = try await consumer.receive()
-
-    // Automatically acknowledge the message
-    try await consumer.acknowledge(message)
-
-    return message
+    
+    func next() async throws -> Message<MessageType>? {
+      return try await nextClosure()
+    }
   }
-
-  public func readBatch(maxMessages: Int) async throws -> [Message<T>] {
-    guard _state == ClientState.connected else {
-      throw PulsarClientError.consumerBusy("Reader not connected")
+  
+  public final class AsyncIterator: AsyncIteratorProtocol {
+    private var reader: ReaderImpl<T>
+    private var consumerIterator: AnyAsyncIterator<T>?
+    
+    init(reader: ReaderImpl<T>) {
+      self.reader = reader
     }
-
-    let messages = try await consumer.receiveBatch(maxMessages: maxMessages)
-
-    // Automatically acknowledge all messages
-    if !messages.isEmpty {
-      try await consumer.acknowledgeBatch(messages)
+    
+    public func next() async throws -> Message<T>? {
+      guard await reader._state == .connected else {
+        return nil
+      }
+      
+      // Initialize iterator on first use
+      if consumerIterator == nil {
+        consumerIterator = AnyAsyncIterator(reader.consumer)
+      }
+      
+      return try await consumerIterator?.next()
     }
-
-    return messages
+  }
+  
+  public nonisolated func makeAsyncIterator() -> AsyncIterator {
+    return AsyncIterator(reader: self)
   }
 
   public func hasMessageAvailable() async throws -> Bool {
@@ -203,7 +220,12 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
       let hasMoreMessages = lastAvailableMessageId > currentPosition
 
       logger.debug(
-        "Message availability check: last=\(lastAvailableMessageId), current=\(currentPosition), hasMore=\(hasMoreMessages)"
+        "Message availability check", 
+        metadata: [
+          "lastAvailableMessageId": "\(lastAvailableMessageId)",
+          "currentPosition": "\(currentPosition)",
+          "hasMoreMessages": "\(hasMoreMessages)"
+        ]
       )
 
       return hasMoreMessages
@@ -266,7 +288,7 @@ actor ReaderImpl<T>: ReaderProtocol where T: Sendable {
   }
 
   private func processException(_ error: any Error) async {
-    logger.error("Reader exception: \(error)")
+    logger.error("Reader exception", metadata: ["error": "\(error)"])
 
     // Handle different types of errors
     switch error {

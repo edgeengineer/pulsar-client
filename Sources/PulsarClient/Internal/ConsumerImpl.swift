@@ -2,8 +2,9 @@ import Foundation
 import Logging
 
 /// Consumer implementation
-actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
+actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
     typealias MessageType = T
+    typealias Element = Message<T>
     private let id: UInt64
     private let connection: Connection
     private let schema: Schema<T>
@@ -16,11 +17,15 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     internal let stateStream: AsyncStream<ClientState>
     private let stateContinuation: AsyncStream<ClientState>.Continuation
     
-    private let messageQueue: AsyncChannel<Message<T>>
+    // Message stream with built-in backpressure via buffering policy
+    private let messageStream: AsyncStream<Message<T>>
+    private let messageContinuation: AsyncStream<Message<T>>.Continuation
+    
     private var receiveTask: Task<Void, Never>?
     private var permits: Int
     private var isFirstFlow = true
     private var lastReceivedMessageId: MessageId?
+    private var bufferedMessageCount: Int = 0  // Track buffered messages
     
     // Dead Letter Queue handler
     private let dlqHandler: DeadLetterQueueHandler<T>?
@@ -61,7 +66,13 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         self.permits = 0  // Start with 0 permits, will request them in runReceiver
         
         (self.stateStream, self.stateContinuation) = AsyncStream<ClientState>.makeStream()
-        self.messageQueue = AsyncChannel(capacity: configuration.receiverQueueSize)
+        
+        // Create async stream with buffering for backpressure
+        // The bufferingOldest policy will drop old messages if buffer is full
+        // Combined with Pulsar's permit system, this provides effective backpressure
+        (self.messageStream, self.messageContinuation) = AsyncStream<Message<T>>.makeStream(
+            bufferingPolicy: .bufferingOldest(configuration.receiverQueueSize)
+        )
         
         // Initialize DLQ handler if policy is configured
         if let dlqPolicy = configuration.deadLetterPolicy,
@@ -97,7 +108,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     deinit {
         stateContinuation.finish()
         receiveTask?.cancel()
-        // messageQueue will be cleaned up automatically
+        messageContinuation.finish()
     }
     
     // MARK: - StateHolder
@@ -187,75 +198,64 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         true  // Conservative approach for nonisolated access
     }
     
-    /// Receive a message with timeout
-    public func receive(timeout: TimeInterval) async throws -> Message<T> {
-        guard _state == .connected else {
-            throw PulsarClientError.consumerBusy("Consumer not connected")
+    // MARK: - AsyncSequence Conformance
+    
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        private let consumer: ConsumerImpl<T>
+        
+        init(consumer: ConsumerImpl<T>) {
+            self.consumer = consumer
         }
         
-        let endTime = Date().addingTimeInterval(timeout)
-        
-        // Poll for messages with short intervals
-        while Date() < endTime {
-            // Check if message is available
-            if var message = await messageQueue.tryReceive() {
-                // Process through interceptors if configured
-                if let interceptors = interceptors {
-                    message = try await interceptors.beforeConsume(consumer: self, message: message)
-                }
-                
-                // Flow control: request more messages if needed
-                // Note: permits are already decremented in handleIncomingMessage
-                if permits <= configuration.receiverQueueSize / 4 {
-                    await requestMoreMessages()
-                }
-                
-                return message
+        public mutating func next() async throws -> Message<T>? {
+            guard await consumer._state == .connected else {
+                return nil
             }
             
-            // Short sleep to avoid busy waiting
-            try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            // Get next message from the stream
+            for await message in consumer.messageStream {
+                var msg = message
+                
+                // Process message
+                try await consumer.processReceivedMessage(&msg)
+                return msg
+            }
+            
+            return nil
         }
-        
-        throw PulsarClientError.timeout("Receive operation timed out after \(timeout) seconds")
     }
     
-    public func receive() async throws -> Message<T> {
-        guard _state == .connected else {
-            throw PulsarClientError.consumerBusy("Consumer not connected")
-        }
-        
-        // Get message from queue
-        guard var message = await messageQueue.receive() else {
-            throw PulsarClientError.consumerBusy("Consumer closed")
-        }
+    public nonisolated func makeAsyncIterator() -> AsyncIterator {
+        return AsyncIterator(consumer: self)
+    }
+    
+    /// Process a received message (decrement counts, apply interceptors, etc.)
+    private func processReceivedMessage(_ message: inout Message<T>) async throws {
+        // Decrement buffered count since we're delivering a message
+        bufferedMessageCount = Swift.max(0, bufferedMessageCount - 1)
         
         // Process through interceptors if configured
         if let interceptors = interceptors {
-            message = try await interceptors.beforeConsume(consumer: self, message: message)
-        }
-        
-        // Flow control: request more messages if needed
-        // Note: permits are already decremented in handleIncomingMessage
-        if permits <= configuration.receiverQueueSize / 4 {
-            await requestMoreMessages()
-        }
-        
-        return message
-    }
-    
-    public func receiveBatch(maxMessages: Int) async throws -> [Message<T>] {
-        var messages: [Message<T>] = []
-        
-        for _ in 0..<maxMessages {
-            if let message = try? await receive() {
-                messages.append(message)
-            } else {
-                break
+            do {
+                message = try await interceptors.beforeConsume(consumer: self, message: message)
+            } catch {
+                logger.error("Interceptor failed during beforeConsume", metadata: [
+                    "messageId": "\(message.id)",
+                    "error": "\(error)"
+                ])
+                throw error
             }
         }
         
-        return messages
+        // Request more permits if we're running low
+        if permits < configuration.receiverQueueSize / 2 {
+            await requestMorePermits()
+        }
+    }
+    
+    /// Request more permits from the broker
+    private func requestMorePermits() async {
+        await requestMoreMessages()
     }
     
     public func acknowledge(_ message: Message<T>) async throws {
@@ -452,7 +452,7 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
     }
     
     public func getBufferedMessageCount() async -> Int {
-        return await messageQueue.getBufferedCount()
+        return bufferedMessageCount
     }
     
     public func getLastMessageId() async throws -> GetLastMessageIdResponse {
@@ -473,8 +473,11 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         // Cancel receive task
         receiveTask?.cancel()
         
-        // Close message queue
-        await messageQueue.finish()
+        // Close message stream
+        messageContinuation.finish()
+        
+        // Reset buffered message count
+        bufferedMessageCount = 0
         
         // Dispose DLQ handler if configured
         if let dlqHandler = dlqHandler {
@@ -540,8 +543,13 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
             permits -= 1
             logger.trace("Received message, permits remaining: \(permits)")
             
-            // Add to queue
-            await messageQueue.send(message)
+            // Add to message stream
+            // The stream's buffering policy handles backpressure
+            // Combined with Pulsar's permit system, this prevents unbounded growth
+            messageContinuation.yield(message)
+            
+            // Increment buffered count
+            bufferedMessageCount += 1
             
         } catch {
             logger.error("Failed to process message: \(error)")
@@ -668,102 +676,6 @@ actor ConsumerImpl<T>: ConsumerProtocol where T: Sendable {
         // In a full implementation, the broker would send topic information
         // with each message for multi-topic subscriptions.
         return topics.first ?? ""
-    }
-}
-
-// MARK: - AsyncChannel
-
-/// Simple async channel for message queuing
-private actor AsyncChannel<T: Sendable> {
-    private var buffer: [T] = []
-    private var waiters: [CheckedContinuation<T?, Never>] = []
-    private var spaceWaiters: [CheckedContinuation<Void, Never>] = []
-    private let capacity: Int
-    private var isFinished = false
-    
-    init(capacity: Int) {
-        self.capacity = capacity
-    }
-    
-    func send(_ value: T) async {
-        guard !isFinished else { return }
-        
-        if let waiter = waiters.first {
-            waiters.removeFirst()
-            waiter.resume(returning: value)
-        } else if buffer.count < capacity {
-            buffer.append(value)
-        } else {
-            // Buffer is full - implement backpressure by waiting
-            await waitForSpace()
-            // After space is available, try to add the value
-            if buffer.count < capacity && !isFinished {
-                buffer.append(value)
-            }
-        }
-    }
-    
-    func receive() async -> T? {
-        if let value = buffer.first {
-            buffer.removeFirst()
-            
-            // Notify any waiting senders that space is available
-            if let spaceWaiter = spaceWaiters.first {
-                spaceWaiters.removeFirst()
-                spaceWaiter.resume()
-            }
-            
-            return value
-        }
-        
-        if isFinished {
-            return nil
-        }
-        
-        return await withCheckedContinuation { continuation in
-            waiters.append(continuation)
-        }
-    }
-    
-    func finish() {
-        isFinished = true
-        for waiter in waiters {
-            waiter.resume(returning: nil)
-        }
-        waiters.removeAll()
-        
-        // Also resume any space waiters
-        for spaceWaiter in spaceWaiters {
-            spaceWaiter.resume()
-        }
-        spaceWaiters.removeAll()
-    }
-    
-    func getBufferedCount() -> Int {
-        return buffer.count
-    }
-    
-    /// Try to receive a message without blocking
-    func tryReceive() -> T? {
-        if let value = buffer.first {
-            buffer.removeFirst()
-            
-            // Notify any waiting senders that space is available
-            if let spaceWaiter = spaceWaiters.first {
-                spaceWaiters.removeFirst()
-                spaceWaiter.resume()
-            }
-            
-            return value
-        }
-        
-        return nil
-    }
-    
-    private func waitForSpace() async {
-        await withCheckedContinuation { continuation in
-            spaceWaiters.append(continuation)
-        }
     }
 }
 
