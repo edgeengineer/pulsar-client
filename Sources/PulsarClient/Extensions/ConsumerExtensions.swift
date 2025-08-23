@@ -16,183 +16,58 @@ import Foundation
 
 // MARK: - Consumer Convenience Extensions
 
+public enum MessageProcessingResult {
+  case acknowledge
+  case ignore
+}
+
 extension ConsumerProtocol {
 
-  /// Acknowledge a message directly (without needing to extract MessageId)
-  public func acknowledge(_ message: Message<MessageType>) async throws {
-    try await acknowledge(message)
+  /// Process messages continuously using AsyncSequence
+  /// - Parameter handler: The handler to process each message and return processing result
+  /// - Note: Messages are handled based on the returned result
+  public func processMessages(_ handler: (Message<MessageType>) async throws -> MessageProcessingResult) async throws {
+    for try await message in self {
+      do {
+        switch try await handler(message) {
+        case .acknowledge:
+          try await acknowledge(message)
+        case .ignore:
+          continue
+        }
+      } catch {
+        try await negativeAcknowledge(message)
+        throw error
+      }
+    }
   }
 
-  /// Process a message and automatically acknowledge it
-  public func process(_ handler: (Message<MessageType>) async throws -> Void) async throws {
-    let message = try await receive()
-    do {
+  /// Process messages with automatic acknowledgment
+  /// - Parameter handler: The handler to process each message
+  /// - Note: Messages are automatically acknowledged after successful processing
+  public func processMessagesWithAutoAck(_ handler: (Message<MessageType>) async throws -> Void) async throws {
+    for try await message in self {
       try await handler(message)
       try await acknowledge(message)
-    } catch {
-      try await negativeAcknowledge(message)
-      throw error
     }
   }
 
-  /// Process messages continuously
-  public func processMessages(_ handler: (Message<MessageType>) async throws -> Void) async throws {
-    while true {
-      try await process(handler)
-    }
-  }
-
-  /// Try to receive a message without blocking
-  public func tryReceive() async -> Message<MessageType>? {
-    do {
-      return try await receive()
-    } catch {
-      return nil
-    }
-  }
-}
-
-// MARK: - Batch Processing Extensions
-
-extension ConsumerProtocol {
-
-  /// Process a batch of messages with automatic acknowledgment
-  public func processBatch(
-    maxMessages: Int,
-    handler: ([Message<MessageType>]) async throws -> Void
+  /// Process messages with a filter
+  /// - Parameters:
+  ///   - filter: The filter predicate
+  ///   - handler: The handler for messages that pass the filter
+  public func processFiltered(
+    where filter: (Message<MessageType>) async -> Bool,
+    handler: (Message<MessageType>) async throws -> Void
   ) async throws {
-    let messages = try await receiveBatch(maxMessages: maxMessages)
-
-    do {
-      try await handler(messages)
-      try await acknowledgeBatch(messages)
-    } catch {
-      // Negative acknowledge all messages in the batch
-      for message in messages {
-        try await negativeAcknowledge(message)
-      }
-      throw error
-    }
-  }
-
-  /// Receive messages with a timeout
-  public func receive(timeout: TimeInterval) async throws -> Message<MessageType> {
-    try await withThrowingTaskGroup(of: Message<MessageType>.self) { group in
-      // Add receive task
-      group.addTask {
-        try await self.receive()
-      }
-
-      // Add timeout task
-      group.addTask {
-        try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-        throw PulsarClientError.timeout("Receive operation timed out")
-      }
-
-      // Return first result (either message or timeout)
-      let result = try await group.next()!
-      group.cancelAll()
-      return result
-    }
-  }
-}
-
-// MARK: - State Monitoring Extensions
-
-extension ConsumerProtocol where Self: StateHolder, Self.T == ClientState {
-
-  /// Wait for the consumer to reach a specific state
-  @discardableResult
-  public func waitForState(_ targetState: ClientState, timeout: TimeInterval = 30.0) async throws
-    -> ClientState
-  {
-    if state == targetState {
-      return state
-    }
-
-    return try await stateChangedTo(targetState, timeout: timeout)
-  }
-
-  /// Wait for the consumer to leave a specific state
-  @discardableResult
-  public func waitToLeaveState(_ currentState: ClientState, timeout: TimeInterval = 30.0)
-    async throws -> ClientState
-  {
-    if state != currentState {
-      return state
-    }
-
-    return try await stateChangedFrom(currentState, timeout: timeout)
-  }
-}
-
-// MARK: - AsyncSequence Support
-
-extension ConsumerProtocol {
-
-  /// Returns an AsyncSequence of messages
-  public var messages: AsyncThrowingStream<Message<MessageType>, Error> {
-    AsyncThrowingStream { continuation in
-      let task = Task {
-        do {
-          while !Task.isCancelled {
-            let message = try await receive()
-            continuation.yield(message)
-          }
-          continuation.finish()
-        } catch {
-          continuation.finish(throwing: error)
-        }
-      }
-
-      continuation.onTermination = { _ in
-        task.cancel()
-      }
-    }
-  }
-}
-
-// MARK: - Seek Extensions
-
-extension ConsumerProtocol {
-
-  /// Seek to the earliest available message
-  public func seekToEarliest() async throws {
-    try await seek(to: .earliest)
-  }
-
-  /// Seek to the latest message
-  public func seekToLatest() async throws {
-    try await seek(to: .latest)
-  }
-
-  /// Seek to a message published after the given date
-  public func seek(after date: Date) async throws {
-    try await seek(to: date)
-  }
-}
-
-// MARK: - Filtering Extensions
-
-extension ConsumerProtocol {
-
-  /// Receive messages that match a predicate
-  public func receiveWhere(_ predicate: (Message<MessageType>) -> Bool) async throws -> Message<
-    MessageType
-  > {
-    while true {
-      let message = try await receive()
-      if predicate(message) {
-        return message
+    for try await message in self {
+      if await filter(message) {
+        try await handler(message)
+        try await acknowledge(message)
       } else {
-        // Acknowledge messages that don't match
+        // Acknowledge filtered out messages as well
         try await acknowledge(message)
       }
     }
-  }
-
-  /// Receive messages with a specific key
-  public func receive(withKey key: String) async throws -> Message<MessageType> {
-    return try await receiveWhere { $0.key == key }
   }
 }

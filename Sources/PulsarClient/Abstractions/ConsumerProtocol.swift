@@ -1,8 +1,16 @@
 import Foundation
 
 /// Consumer interface for receiving messages from Pulsar
-public protocol ConsumerProtocol<MessageType>: StateHolder, Sendable
-where MessageType: Sendable, T == ClientState {
+/// 
+/// Consumers conform to AsyncSequence, allowing you to iterate over messages:
+/// ```swift
+/// for try await message in consumer {
+///     // Process message
+///     try await consumer.acknowledge(message)
+/// }
+/// ```
+public protocol ConsumerProtocol<MessageType>: StateHolder, AsyncSequence, Sendable
+where MessageType: Sendable, T == ClientState, Element == Message<MessageType> {
   associatedtype MessageType: Sendable
 
   /// The topic(s) this consumer is subscribed to
@@ -10,15 +18,6 @@ where MessageType: Sendable, T == ClientState {
 
   /// The subscription name
   var subscription: String { get }
-
-  /// Receive a single message
-  /// - Returns: The received message
-  func receive() async throws -> Message<MessageType>
-
-  /// Receive a batch of messages
-  /// - Parameter maxMessages: Maximum number of messages to receive
-  /// - Returns: The received messages
-  func receiveBatch(maxMessages: Int) async throws -> [Message<MessageType>]
 
   /// Acknowledge a message
   /// - Parameter message: The message to acknowledge

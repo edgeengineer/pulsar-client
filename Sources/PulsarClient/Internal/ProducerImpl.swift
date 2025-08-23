@@ -32,6 +32,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   private let retryExecutor: RetryExecutor
   private let stateManager: ProducerStateManager
   private let exceptionHandler: ExceptionHandler
+  
+  // Interceptors
+  private let interceptors: ProducerInterceptors<T>?
 
   public let topic: String
   public nonisolated var state: ClientState {
@@ -76,6 +79,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     )
     self.exceptionHandler = DefaultExceptionHandler(logger: logger)
 
+    // Initialize interceptors if configured
+    if !configuration.interceptors.isEmpty {
+      self.interceptors = ProducerInterceptors(interceptors: configuration.interceptors)
+    } else {
+      self.interceptors = nil
+    }
+    
     // Initialize batch builder if batching is enabled
     if configuration.batchingEnabled {
       self.batchBuilder = MessageBatchBuilder(
@@ -209,31 +219,56 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     try await send(message, metadata: MessageMetadata())
   }
 
-  public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
-    guard _state == .connected else {
-      throw PulsarClientError.producerBusy("Producer not connected")
-    }
+   public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
+      guard _state == .connected else {
+        throw PulsarClientError.producerBusy("Producer not connected")
+      }
+     
+     // Create a Message object for interceptors
+      var msg = Message(
+            id: MessageId(ledgerId: 0, entryId: 0),  // Will be set after send
+            value: message,
+            metadata: metadata,
+            publishTime: Date(),
+            producerName: producerName,
+            replicatedFrom: nil,
+            topicName: topic,
+            redeliveryCount: 0,
+            data: nil
+        )
+        
+        // Process through interceptors if configured
+      if let interceptors = interceptors {
+          msg = try await interceptors.beforeSend(producer: self, message: msg)
+      }
+     
+      // Store the message for interceptor notification
+      let interceptorMessage = msg
 
-    // Assign sequence ID synchronously to ensure ordering
-    var metadata = metadata
-    if metadata.sequenceId == nil {
-      metadata.sequenceId = nextSequenceId()
-    }
+      // Use the potentially modified metadata from the interceptor
+      var metadata = msg.metadata
+      if metadata.sequenceId == nil {
+        metadata.sequenceId = nextSequenceId()
+      }
 
-    // Encode message synchronously to ensure no race conditions
-    let payload = try schema.encode(message)
+      // Encode message synchronously to ensure no race conditions
+      let payload = try schema.encode(message)
 
-    // Create metadata synchronously
-    let protoMetadata = await connection.commandBuilder.createMessageMetadata(
-      producerName: producerName,
-      sequenceId: metadata.sequenceId!,
-      publishTime: Date(),
-      properties: metadata.properties,
-      compressionType: configuration.compressionType
-    )
+      // Create metadata synchronously
+      let protoMetadata = await connection.commandBuilder.createMessageMetadata(
+        producerName: producerName,
+        sequenceId: metadata.sequenceId!,
+        publishTime: Date(),
+        properties: metadata.properties,
+        compressionType: configuration.compressionType
+      )
 
-    // Use the serial dispatch queue to ensure FIFO ordering
-    return try await enqueueAndWait(metadata: protoMetadata, payload: payload)
+      // Use the serial dispatch queue to ensure FIFO ordering
+      return try await enqueueAndWait(
+        metadata: protoMetadata, 
+        payload: payload,
+        interceptorMessage: interceptorMessage
+      )
   }
 
   public func sendBatch(_ messages: [T]) async throws -> [MessageId] {
@@ -295,20 +330,25 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     updateState(.closed)
-    logger.info("Producer closed", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Producer closed", metadata: ["producerName": "\(producerName)"])
   }
 
   // MARK: - Private Methods
 
   /// Enqueue operation and wait for completion with FIFO ordering
-  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
-    -> MessageId
-  {
+  private func enqueueAndWait(
+    metadata: Pulsar_Proto_MessageMetadata, 
+    payload: Data,
+    interceptorMessage: Message<T>? = nil
+  ) async throws -> MessageId {
     return try await withCheckedThrowingContinuation { continuation in
       let sendOp = SendOperation<T>(
         metadata: metadata,
         payload: payload,
-        continuation: continuation
+        continuation: continuation,
+        interceptorMessage: interceptorMessage,
+        interceptors: interceptors,
+        producer: self
       )
 
       // Use serial dispatch queue to maintain FIFO ordering
@@ -351,7 +391,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
   private func runMessageDispatcher() async {
-    logger.info("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
 
     while !Task.isCancelled && _state == .connected {
       do {
@@ -375,7 +415,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       }
     }
 
-    logger.info("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
   }
 
   /// Process a single send operation (like C# channel.Send)
@@ -418,7 +458,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       await channel.registerSendOperation(sendOp)
 
       // Send the frame
-      logger.info("Sending frame for sequence \(sendOp.sequenceId)")
+      logger.trace("Sending frame for sequence", metadata: ["sequenceId": "\(sendOp.sequenceId)"])
       try await connection.sendCommand(frame)
 
       // The receipt will be handled by the channel when it arrives
@@ -441,7 +481,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
       } catch {
         if !Task.isCancelled {
-      logger.warning("Batch sender error", metadata: ["error": "\(error)"])
+      logger.debug("Batch sender error", metadata: ["error": "\(error)"])
         }
       }
     }
@@ -534,7 +574,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         finalPayload = try compressData(batchedPayload, type: configuration.compressionType)
         metadata.compression = configuration.compressionType.toProto()
       } catch {
-        logger.warning("Failed to compress batch, sending uncompressed: \(error)")
+        logger.debug("Failed to compress batch, sending uncompressed", metadata: ["error": "\(error)"])
         finalPayload = batchedPayload
       }
     } else {
@@ -585,7 +625,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Handle producer error with fault tolerance
   func handleError(_ error: Error) async {
-    logger.warning("Producer \(producerName) error: \(error)")
+    logger.debug("Producer error", metadata: ["producerName": "\(producerName)", "error": "\(error)"])
 
     var exceptionContext = ExceptionContext(
       exception: error,
@@ -606,7 +646,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
     case .rethrow:
       // Keep current state, might recover later
-      logger.warning(
+      logger.debug(
         "Producer keeping current state after error",
         metadata: ["producerName": "\(producerName)", "error": "\(error)"]
       )
@@ -627,7 +667,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // Re-establish producer if needed
       // The channel manager should handle producer re-creation
       updateState(.connected)
-      logger.info("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
+      logger.debug("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
 
     } catch {
       logger.error(

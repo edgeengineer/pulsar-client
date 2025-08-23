@@ -15,18 +15,14 @@
 import Foundation
 
 /// Protocol for components that can receive messages
-public protocol Receivable<T>: Sendable where T: Sendable {
+/// 
+/// Conforming types should implement AsyncSequence to allow iteration over messages:
+/// ```swift
+/// for try await message in receiver {
+///     // Process message
+/// }
+/// ```
+public protocol Receivable<T>: AsyncSequence, Sendable 
+where T: Sendable, Element == Message<T> {
   associatedtype T
-
-  /// Receive a single message
-  func receive() async throws -> Message<T>
-
-  /// Receive a single message with timeout
-  func receive(timeout: TimeInterval) async throws -> Message<T>
-
-  /// Receive multiple messages
-  func receiveBatch(maxMessages: Int) async throws -> [Message<T>]
-
-  /// Receive multiple messages with timeout
-  func receiveBatch(maxMessages: Int, timeout: TimeInterval) async throws -> [Message<T>]
 }
