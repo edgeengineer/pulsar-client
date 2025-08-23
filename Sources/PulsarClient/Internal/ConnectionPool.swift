@@ -31,8 +31,22 @@ actor ConnectionPool {
     self.authRefreshInterval = authRefreshInterval
   }
 
+  /// Execute an operation with a connection for the given broker URL
+  func withConnection<T: Sendable>(
+    for brokerUrl: String,
+    operation: (Connection) async throws -> T
+  ) async throws -> T {
+    let connection = try await getOrCreateConnection(for: brokerUrl)
+    return try await operation(connection)
+  }
+  
   /// Get or create a connection for the given broker URL
   func getConnection(for brokerUrl: String) async throws -> Connection {
+    return try await getOrCreateConnection(for: brokerUrl)
+  }
+  
+  /// Internal method to get or create a connection
+  private func getOrCreateConnection(for brokerUrl: String) async throws -> Connection {
     // Check if we already have a connection
     if let existingConnection = connections[brokerUrl] {
       let state = await existingConnection.state
@@ -89,13 +103,15 @@ actor ConnectionPool {
         return connection
       } else if case .faulted = state {
         connections.removeValue(forKey: brokerUrl)
+        await connection.close()
         throw PulsarClientError.connectionFailed("Connection failed to establish")
       }
-      try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+      try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
     }
     
     // Timeout
     connections.removeValue(forKey: brokerUrl)
+    await connection.close()
     throw PulsarClientError.timeout("Connection establishment timeout")
   }
 

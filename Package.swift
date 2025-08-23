@@ -24,6 +24,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.32.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0"),
+        .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.0.0"),
         .package(url: "https://github.com/edgeengineer/cyclic-redundancy-check.git", from: "0.0.5")
     ],
     targets: [
@@ -38,6 +39,7 @@ let package = Package(
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "CyclicRedundancyCheck", package: "cyclic-redundancy-check")
             ],
             exclude: ["Proto/PulsarApi.proto"]
