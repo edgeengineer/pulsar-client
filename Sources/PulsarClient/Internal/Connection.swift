@@ -363,9 +363,9 @@ actor Connection: PulsarConnection {
       }
       
       // Add task for authentication refresh if needed
-      if self.authentication != nil {
+      if let auth = self.authentication {
         group.addTask {
-          try await self.processAuthenticationRefresh()
+          try await self.processAuthenticationRefresh(auth: auth)
         }
       }
       
@@ -559,9 +559,7 @@ actor Connection: PulsarConnection {
   }
   
   /// Process authentication refresh periodically
-  private func processAuthenticationRefresh() async throws {
-    guard let auth = authentication else { return }
-    
+  private func processAuthenticationRefresh(auth: Authentication) async throws {
     logger.debug("Starting authentication refresh processing")
     
     while !Task.isCancelled && _state == .connected {
