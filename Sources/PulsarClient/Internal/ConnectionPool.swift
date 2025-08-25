@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import NIOCore
 import NIOPosix
+import NIO
 
 /// Connection pool for managing multiple Pulsar connections
 actor ConnectionPool {
@@ -31,77 +32,76 @@ actor ConnectionPool {
     self.authRefreshInterval = authRefreshInterval
   }
 
-  /// Execute an operation with a connection for the given broker URL
   func withConnection<T: Sendable>(
     for brokerUrl: String,
-    operation: @escaping @Sendable (Connection) async throws -> T
+    operation: @escaping @Sendable (
+      NIOAsyncChannelInboundStream<PulsarFrame>,
+      NIOAsyncChannelOutboundWriter<PulsarFrame>
+    ) async throws -> T
   ) async throws -> T {
-    // Check if we have an existing connection we can reuse
-    if let existingConnection = connections[brokerUrl] {
-      let state = await existingConnection.state
-      if state == .connected {
-        // Use existing connection without closing it
-        return try await operation(existingConnection)
-      }
-    }
-    
-    // Create a new connection for this operation
     let url = try PulsarURL(string: brokerUrl)
-    let connection = Connection(
-      url: url, 
-      eventLoopGroup: eventLoopGroup, 
-      logger: logger, 
-      authentication: authentication,
-      encryptionPolicy: encryptionPolicy, 
-      authRefreshInterval: authRefreshInterval
-    )
     
-    // Use structured concurrency to ensure connection is properly managed
-    return try await withThrowingTaskGroup(of: T.self) { group in
-      // Start the connection
-      group.addTask {
-        // This task runs the connection for its lifetime
-        // It will be cancelled when the group is cancelled
-        try await connection.run()
-        // If run() completes, throw an error since connection died
-        throw PulsarClientError.connectionFailed("Connection terminated unexpectedly")
+    // Bootstrap TCP connection with Pulsar-specific pipeline
+    let bootstrap = ClientBootstrap(group: eventLoopGroup)
+      .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+      .channelOption(ChannelOptions.tcpOption(.tcp_nodelay), value: 1)
+      .channelInitializer { channel in
+        self.setupChannelPipeline(channel: channel, url: url)
+      }
+    
+    let channel = try await bootstrap.connect(host: url.host, port: url.port).get()
+
+    let asyncChannel = try await channel.eventLoop.submit {
+      try NIOAsyncChannel<PulsarFrame, PulsarFrame>(
+        wrappingChannelSynchronously: channel,
+        configuration: NIOAsyncChannel.Configuration(
+          backPressureStrategy: .init(lowWatermark: 2, highWatermark: 100),
+          isOutboundHalfClosureEnabled: false,
+          inboundType: PulsarFrame.self,
+          outboundType: PulsarFrame.self
+        )
+      )
+    }.get()
+    
+    // Execute operation and then close (following the example pattern)
+    return try await asyncChannel.executeThenClose { inbound, outbound in
+      // Send CONNECT command
+      let connectCommand: Pulsar_Proto_BaseCommand
+      let commandBuilder = PulsarCommandBuilder()
+      if let auth = authentication {
+        let authData = try await auth.getAuthenticationData()
+        connectCommand = commandBuilder.connect(
+          authMethodName: auth.authenticationMethodName,
+          authData: authData
+        )
+      } else {
+        connectCommand = commandBuilder.connect()
       }
       
-      // Wait for connection to establish
-      var attempts = 0
-      while attempts < 50 {  // Max 5 seconds
-        let state = await connection.state
-        if state == .connected {
-          break
-        } else if case .faulted = state {
-          group.cancelAll()
-          throw PulsarClientError.connectionFailed("Connection failed to establish")
+      let connectFrame = PulsarFrame(command: connectCommand)
+      try await outbound.write(connectFrame)
+      
+      // Wait for CONNECTED response
+      for try await frame in inbound {
+        if frame.command.type == .connected {
+          // Connection established, execute the operation
+          return try await operation(inbound, outbound)
+        } else {
+          throw PulsarClientError.connectionFailed("Unexpected response: \(frame.command.type)")
         }
-        try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-        attempts += 1
       }
       
-      if attempts >= 50 {
-        group.cancelAll()
-        throw PulsarClientError.timeout("Connection establishment timeout")
-      }
-      
-      // Execute the operation
-      group.addTask {
-        try await operation(connection)
-      }
-      
-      // Wait for the operation to complete
-      guard let result = try await group.next() else {
-        throw PulsarClientError.connectionFailed("Operation failed")
-      }
-      
-      // Cancel the connection task and clean up
-      group.cancelAll()
-      await connection.close()
-      
-      return result
+      throw PulsarClientError.connectionFailed("Connection closed before CONNECTED response")
     }
+  }
+  
+  /// Helper to setup channel pipeline for raw connections
+  private nonisolated func setupChannelPipeline(
+    channel: NIOCore.Channel,
+    url: PulsarURL
+  ) -> EventLoopFuture<Void> {
+    // Use the centralized pipeline builder for base pipeline
+    return ChannelPipelineBuilder.setupBasePipeline(on: channel, for: url)
   }
   
   /// Get or create a persistent connection for the given broker URL

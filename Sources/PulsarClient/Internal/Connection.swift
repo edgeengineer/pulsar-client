@@ -282,38 +282,18 @@ actor Connection: PulsarConnection {
   private nonisolated func setupChannelPipeline(
     channel: NIOCore.Channel, connectCommand: Pulsar_Proto_BaseCommand
   ) -> EventLoopFuture<Void> {
-
-    var handlers: [ChannelHandler] = []
-
-    // Add SSL handler if needed
-    if url.isSSL {
-      do {
-        let sslContext = try NIOSSLContext(configuration: .makeClientConfiguration())
-        let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: url.host)
-        handlers.append(sslHandler)
-      } catch {
-        return channel.eventLoop.makeFailedFuture(error)
-      }
-    }
-
-    // Add a raw data logger for debugging
-    handlers.append(RawDataLogger())
-
-    // Add frame codec handlers (decoder and encoder)
-    handlers.append(ByteToMessageHandler(PulsarFrameByteDecoder()))
-    handlers.append(MessageToByteHandler(PulsarFrameByteEncoder()))
-    
-    // Add the handler that manages connection handshake
-    let connectedHandler = ConnectedFrameHandler(
+    // Use the centralized pipeline builder
+    let configuration = ChannelPipelineBuilder.Configuration(
+      url: url,
+      includeRawDataLogger: true,  // Include for debugging
       connectCommand: connectCommand,
-      handshakeTimeout: TimeAmount.seconds(10),
       logger: logger
     )
-    handlers.append(connectedHandler)
     
-    // NIOAsyncChannel will be added after this pipeline setup
-
-    return channel.pipeline.addHandlers(handlers, position: .last)
+    return ChannelPipelineBuilder.setupCompletePipeline(
+      on: channel,
+      configuration: configuration
+    )
   }
 
   internal func sendFrame(_ frame: PulsarFrame) async throws {
@@ -643,7 +623,7 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
 
 // MARK: - Frame Codec
 
-final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
+internal final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
   typealias InboundOut = PulsarFrame
 
   private let frameDecoder = PulsarFrameDecoder()
@@ -692,7 +672,7 @@ final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
   }
 }
 
-final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
+internal final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
   typealias OutboundIn = PulsarFrame
 
   private let frameEncoder = PulsarFrameEncoder()
