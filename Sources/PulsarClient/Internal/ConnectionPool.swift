@@ -34,19 +34,79 @@ actor ConnectionPool {
   /// Execute an operation with a connection for the given broker URL
   func withConnection<T: Sendable>(
     for brokerUrl: String,
-    operation: (Connection) async throws -> T
+    operation: @escaping @Sendable (Connection) async throws -> T
   ) async throws -> T {
-    let connection = try await getOrCreateConnection(for: brokerUrl)
-    return try await operation(connection)
+    // Check if we have an existing connection we can reuse
+    if let existingConnection = connections[brokerUrl] {
+      let state = await existingConnection.state
+      if state == .connected {
+        // Use existing connection without closing it
+        return try await operation(existingConnection)
+      }
+    }
+    
+    // Create a new connection for this operation
+    let url = try PulsarURL(string: brokerUrl)
+    let connection = Connection(
+      url: url, 
+      eventLoopGroup: eventLoopGroup, 
+      logger: logger, 
+      authentication: authentication,
+      encryptionPolicy: encryptionPolicy, 
+      authRefreshInterval: authRefreshInterval
+    )
+    
+    // Use structured concurrency to ensure connection is properly managed
+    return try await withThrowingTaskGroup(of: T.self) { group in
+      // Start the connection
+      group.addTask {
+        // This task runs the connection for its lifetime
+        // It will be cancelled when the group is cancelled
+        try await connection.run()
+        // If run() completes, throw an error since connection died
+        throw PulsarClientError.connectionFailed("Connection terminated unexpectedly")
+      }
+      
+      // Wait for connection to establish
+      var attempts = 0
+      while attempts < 50 {  // Max 5 seconds
+        let state = await connection.state
+        if state == .connected {
+          break
+        } else if case .faulted = state {
+          group.cancelAll()
+          throw PulsarClientError.connectionFailed("Connection failed to establish")
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        attempts += 1
+      }
+      
+      if attempts >= 50 {
+        group.cancelAll()
+        throw PulsarClientError.timeout("Connection establishment timeout")
+      }
+      
+      // Execute the operation
+      group.addTask {
+        try await operation(connection)
+      }
+      
+      // Wait for the operation to complete
+      guard let result = try await group.next() else {
+        throw PulsarClientError.connectionFailed("Operation failed")
+      }
+      
+      // Cancel the connection task and clean up
+      group.cancelAll()
+      await connection.close()
+      
+      return result
+    }
   }
   
-  /// Get or create a connection for the given broker URL
+  /// Get or create a persistent connection for the given broker URL
+  // TODO: remove and replace with a service pattern
   func getConnection(for brokerUrl: String) async throws -> Connection {
-    return try await getOrCreateConnection(for: brokerUrl)
-  }
-  
-  /// Internal method to get or create a connection
-  private func getOrCreateConnection(for brokerUrl: String) async throws -> Connection {
     // Check if we already have a connection
     if let existingConnection = connections[brokerUrl] {
       let state = await existingConnection.state
@@ -79,14 +139,14 @@ actor ConnectionPool {
       }
     }
 
-    // Create new connection
+    // Create new persistent connection
     let url = try PulsarURL(string: brokerUrl)
     let connection = Connection(
       url: url, eventLoopGroup: eventLoopGroup, logger: logger, authentication: authentication,
       encryptionPolicy: encryptionPolicy, authRefreshInterval: authRefreshInterval)
     connections[brokerUrl] = connection
 
-    // Start the connection in a background task
+    // Start the connection in a background task (it will run for its lifetime)
     Task {
       do {
         try await connection.run()
