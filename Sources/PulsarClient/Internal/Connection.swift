@@ -138,9 +138,11 @@ actor Connection: PulsarConnection {
       if let auth = authentication {
         logger.debug("Using authentication")
         let authData = try await auth.getAuthenticationData()
+        var authBuffer = ByteBufferAllocator().buffer(capacity: authData.count)
+        authBuffer.writeBytes(authData)
         connectCommand = commandBuilder.connect(
           authMethodName: auth.authenticationMethodName,
-          authData: authData
+          authData: authBuffer
         )
       } else {
         logger.debug("No authentication required")
@@ -512,14 +514,15 @@ actor Connection: PulsarConnection {
       
       // Debug: Log the frame being sent
       let encoder = PulsarFrameEncoder()
-      if let data = try? encoder.encode(frame: frame) {
-        let hexString = data.prefix(100).map { String(format: "%02x", $0) }.joined(separator: " ")
+      if let buffer = try? encoder.encode(frame: frame) {
+        let data = buffer.getData(at: 0, length: min(100, buffer.readableBytes)) ?? Data()
+        let hexString = data.map { String(format: "%02x", $0) }.joined(separator: " ")
         logger.trace("Sending frame", metadata: [
           "commandNumber": "\(commandCount)",
-          "bytes": "\(data.count)", 
+          "bytes": "\(buffer.readableBytes)", 
           "preview": "\(hexString)..."
         ])
-        totalBytesSent += UInt64(data.count)
+        totalBytesSent += UInt64(buffer.readableBytes)
       }
 
       // NIOAsyncChannel handles backpressure automatically
@@ -648,24 +651,18 @@ internal final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Se
       return .needMoreData
     }
 
-    // Read the complete frame
-    guard let bytes = buffer.readBytes(length: Int(totalSize) + 4) else {
-      return .needMoreData
-    }
-    let data = Data(bytes)
+    // Save the current reader index
+    let startIndex = buffer.readerIndex
 
-    // Log first bytes
-    let hexString = data.prefix(50).map { String(format: "%02x", $0) }.joined(separator: " ")
-    logger.trace("Received frame", metadata: [
-      "bytes": "\(data.count)",
-      "preview": "\(hexString)..."
-    ])
-
-    if let frame = try frameDecoder.decode(from: data) {
+    // Try to decode the frame directly from the ByteBuffer
+    if let frame = try frameDecoder.decode(from: &buffer) {
       logger.trace("Decoded frame", metadata: ["type": "\(frame.command.type)"])
       context.fireChannelRead(wrapInboundOut(frame))
     } else {
+      // Reset reader index if decoding failed
+      buffer.moveReaderIndex(to: startIndex)
       logger.error("Failed to decode frame")
+      return .needMoreData
     }
 
     return .continue
@@ -678,8 +675,8 @@ internal final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Se
   private let frameEncoder = PulsarFrameEncoder()
 
   func encode(data: PulsarFrame, out: inout ByteBuffer) throws {
-    let encoded = try frameEncoder.encode(frame: data)
-    out.writeBytes(encoded)
+    var encoded = try frameEncoder.encode(frame: data)
+    out.writeBuffer(&encoded)
   }
 }
 

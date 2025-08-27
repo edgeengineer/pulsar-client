@@ -70,9 +70,11 @@ actor ConnectionPool {
       let commandBuilder = PulsarCommandBuilder()
       if let auth = authentication {
         let authData = try await auth.getAuthenticationData()
+        var authBuffer = ByteBufferAllocator().buffer(capacity: authData.count)
+        authBuffer.writeBytes(authData)
         connectCommand = commandBuilder.connect(
           authMethodName: auth.authenticationMethodName,
-          authData: authData
+          authData: authBuffer
         )
       } else {
         connectCommand = commandBuilder.connect()

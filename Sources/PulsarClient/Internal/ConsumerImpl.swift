@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import NIOCore
 
 /// Consumer implementation
 actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
@@ -507,12 +508,15 @@ actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
     
     /// Handle incoming message from broker
     /// Note: In Pulsar protocol, the actual message payload comes separately from the CommandMessage
-    func handleIncomingMessage(_ commandMessage: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata) async {
+    func handleIncomingMessage(_ commandMessage: Pulsar_Proto_CommandMessage, payload: ByteBuffer, metadata: Pulsar_Proto_MessageMetadata) async {
         logger.trace("Consumer received message", metadata: ["consumerId": "\(id)", "ledgerId": "\(commandMessage.messageID.ledgerID)", "entryId": "\(commandMessage.messageID.entryID)"])
         
         do {
-            // Decode message payload
-            let value = try schema.decode(payload)
+            // Decode message payload - convert ByteBuffer to Data for now
+            // TODO: Update schema.decode to accept ByteBuffer directly
+            var payloadCopy = payload
+            let payloadData = payloadCopy.readData(length: payloadCopy.readableBytes) ?? Data()
+            let value = try schema.decode(payloadData)
             
             // Create MessageMetadata from protocol buffer
             let messageMetadata = MessageMetadata(from: metadata)

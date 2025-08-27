@@ -1,9 +1,10 @@
 import Foundation
+import NIOCore
 
 /// Represents a pending send operation, similar to C# SendOp
 final class SendOperation<T: Sendable>: Sendable {
     let metadata: Pulsar_Proto_MessageMetadata
-    let payload: Data
+    let payload: ByteBuffer
     let continuation: CheckedContinuation<MessageId, Error>
     let sequenceId: UInt64
     
@@ -13,7 +14,7 @@ final class SendOperation<T: Sendable>: Sendable {
     let producer: (any ProducerProtocol<T>)?
     
     init(metadata: Pulsar_Proto_MessageMetadata, 
-         payload: Data, 
+         payload: ByteBuffer, 
          continuation: CheckedContinuation<MessageId, Error>,
          interceptorMessage: Message<T>? = nil,
          interceptors: ProducerInterceptors<T>? = nil,

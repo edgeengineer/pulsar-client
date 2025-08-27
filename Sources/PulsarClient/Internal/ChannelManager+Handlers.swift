@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import NIOCore
 
 // MARK: - Message Handling Extensions
 
@@ -7,7 +8,7 @@ extension ChannelManager {
 
   /// Handle incoming message from broker
   func handleIncomingMessage(
-    _ message: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata
+    _ message: Pulsar_Proto_CommandMessage, payload: ByteBuffer, metadata: Pulsar_Proto_MessageMetadata
   ) async {
     guard let consumerChannel = consumers[message.consumerID] else {
       logger.debug("Received message for unknown consumer", metadata: ["consumerId": "\(message.consumerID)"])
@@ -134,7 +135,7 @@ extension ConsumerChannel {
 
   /// Handle incoming message
   func handleMessage(
-    _ message: Pulsar_Proto_CommandMessage, payload: Data, metadata: Pulsar_Proto_MessageMetadata
+    _ message: Pulsar_Proto_CommandMessage, payload: ByteBuffer, metadata: Pulsar_Proto_MessageMetadata
   ) async {
     guard state == .active else {
       logger.debug("Received message for inactive consumer", metadata: ["consumerId": "\(id)"])

@@ -252,7 +252,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       }
 
       // Encode message synchronously to ensure no race conditions
-      let payload = try schema.encode(message)
+      let payloadData = try schema.encode(message)
+      var payload = ByteBufferAllocator().buffer(capacity: payloadData.count)
+      payload.writeBytes(payloadData)
 
       // Create metadata synchronously
       let protoMetadata = await connection.commandBuilder.createMessageMetadata(
@@ -338,7 +340,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   /// Enqueue operation and wait for completion with FIFO ordering
   private func enqueueAndWait(
     metadata: Pulsar_Proto_MessageMetadata, 
-    payload: Data,
+    payload: ByteBuffer,
     interceptorMessage: Message<T>? = nil
   ) async throws -> MessageId {
     return try await withCheckedThrowingContinuation { continuation in
@@ -497,7 +499,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     // Create batched payload
-    var batchedPayload = Data()
+    var batchedPayload = ByteBufferAllocator().buffer(capacity: 1024)
     var singleMessageMetadatas: [Pulsar_Proto_SingleMessageMetadata] = []
 
     for message in batch.messages {
@@ -535,14 +537,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       let metadataData = try singleMeta.serializedData()
 
       // Write metadata size (4 bytes)
-      var metadataSize = UInt32(metadataData.count).bigEndian
-      batchedPayload.append(Data(bytes: &metadataSize, count: 4))
+      batchedPayload.writeUInt32BE(UInt32(metadataData.count))
 
       // Write metadata
-      batchedPayload.append(metadataData)
+      batchedPayload.writeBytes(metadataData)
 
       // Write payload
-      batchedPayload.append(messagePayload)
+      batchedPayload.writeBytes(messagePayload)
     }
 
     // Create batch metadata
@@ -556,7 +557,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
     // Set batch information
     metadata.numMessagesInBatch = Int32(batch.messages.count)
-    metadata.uncompressedSize = UInt32(batchedPayload.count)
+    metadata.uncompressedSize = UInt32(batchedPayload.readableBytes)
 
     // Create send command with the highest sequence ID
     let highestSequenceId = batch.messages.last!.sequenceId
@@ -567,11 +568,17 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     )
 
     // Apply compression if needed
-    let finalPayload: Data
+    let finalPayload: ByteBuffer
     if configuration.compressionType != .none {
       // Compress the payload
       do {
-        finalPayload = try compressData(batchedPayload, type: configuration.compressionType)
+        // Convert to Data for compression (temporary until compression functions support ByteBuffer)
+        var batchedPayloadCopy = batchedPayload
+        let dataToCompress = batchedPayloadCopy.readData(length: batchedPayloadCopy.readableBytes) ?? Data()
+        let compressedData = try compressData(dataToCompress, type: configuration.compressionType)
+        var compressedBuffer = ByteBufferAllocator().buffer(capacity: compressedData.count)
+        compressedBuffer.writeBytes(compressedData)
+        finalPayload = compressedBuffer
         metadata.compression = configuration.compressionType.toProto()
       } catch {
         logger.debug("Failed to compress batch, sending uncompressed", metadata: ["error": "\(error)"])
