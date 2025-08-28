@@ -78,6 +78,7 @@ public struct PulsarFrameEncoder {
 
   /// Encode a frame to bytes (matches C# DotPulsar protocol specification)
   public func encode(frame: PulsarFrame) throws -> ByteBuffer {
+    // Serialize command
     let commandData = try frame.command.serializedData()
     let commandSize = UInt32(commandData.count)
 
@@ -98,6 +99,7 @@ public struct PulsarFrameEncoder {
       throw PulsarClientError.protocolError("Metadata required for message frames")
     }
 
+    // Serialize metadata
     let metadataData: Data
     do {
       metadataData = try metadata.serializedData()
@@ -132,7 +134,7 @@ public struct PulsarFrameEncoder {
 
     buffer.writeUInt32BE(totalSize)
     buffer.writeUInt32BE(commandSize)
-    buffer.writeBytes(commandData)
+    buffer.writeBytes(commandData)  
     buffer.writeBytes([0x0e, 0x01])  // Magic number
     buffer.writeUInt32BE(checksum)
     var metadataPayloadCopy = metadataPayloadSection
@@ -218,12 +220,12 @@ public struct PulsarFrameDecoder {
       }
 
       if metadataSize > 0 {
-        // Read metadata
-        guard let metadataData = buffer.readData(length: Int(metadataSize)) else {
+        // Read metadata using ByteBuffer directly
+        guard let metadataSlice = buffer.readSlice(length: Int(metadataSize)) else {
           buffer.moveReaderIndex(to: originalReaderIndex)
           return nil
         }
-        metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: metadataData)
+        metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: metadataSlice)
 
         // Read payload if present
         let payloadSize = remainingSize - 6 - 4 - Int(metadataSize)  // minus magic, checksum, metadata size, metadata
@@ -233,10 +235,9 @@ public struct PulsarFrameDecoder {
 
         // Verify checksum
         let endIndex = buffer.readerIndex
-        let checksumData = buffer.getData(at: checksumStartIndex, length: endIndex - checksumStartIndex) ?? Data()
-        var checksumBuffer = ByteBufferAllocator().buffer(capacity: checksumData.count)
-        checksumBuffer.writeBytes(checksumData)
-        let calculatedChecksum = calculateCRC32C(buffer: checksumBuffer)
+        let checksumLength = endIndex - checksumStartIndex
+        let checksumSlice = buffer.getSlice(at: checksumStartIndex, length: checksumLength) ?? ByteBuffer()
+        let calculatedChecksum = calculateCRC32C(buffer: checksumSlice)
         guard calculatedChecksum == checksum else {
           throw PulsarClientError.protocolError("Frame checksum mismatch")
         }

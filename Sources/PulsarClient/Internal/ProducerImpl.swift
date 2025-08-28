@@ -572,13 +572,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     if configuration.compressionType != .none {
       // Compress the payload
       do {
-        // Convert to Data for compression (temporary until compression functions support ByteBuffer)
-        var batchedPayloadCopy = batchedPayload
-        let dataToCompress = batchedPayloadCopy.readData(length: batchedPayloadCopy.readableBytes) ?? Data()
-        let compressedData = try compressData(dataToCompress, type: configuration.compressionType)
-        var compressedBuffer = ByteBufferAllocator().buffer(capacity: compressedData.count)
-        compressedBuffer.writeBytes(compressedData)
-        finalPayload = compressedBuffer
+        finalPayload = try compressPayload(batchedPayload, type: configuration.compressionType)
         metadata.compression = configuration.compressionType.toProto()
       } catch {
         logger.debug("Failed to compress batch, sending uncompressed", metadata: ["error": "\(error)"])
@@ -881,10 +875,10 @@ extension ProducerImpl {
 
 // MARK: - Compression
 
-private func compressData(_ data: Data, type: CompressionType) throws -> Data {
+private func compressPayload(_ payload: ByteBuffer, type: CompressionType) throws -> ByteBuffer {
   switch type {
   case .none:
-    return data
+    return payload
   case .lz4:
     // LZ4 compression would require external library
     throw PulsarClientError.notImplemented

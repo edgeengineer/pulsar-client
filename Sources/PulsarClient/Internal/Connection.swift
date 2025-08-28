@@ -515,8 +515,13 @@ actor Connection: PulsarConnection {
       // Debug: Log the frame being sent
       let encoder = PulsarFrameEncoder()
       if let buffer = try? encoder.encode(frame: frame) {
-        let data = buffer.getData(at: 0, length: min(100, buffer.readableBytes)) ?? Data()
-        let hexString = data.map { String(format: "%02x", $0) }.joined(separator: " ")
+        let previewLength = min(100, buffer.readableBytes)
+        let hexString: String
+        if let previewBytes = buffer.getBytes(at: buffer.readerIndex, length: previewLength) {
+          hexString = previewBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        } else {
+          hexString = "<no preview>"
+        }
         logger.trace("Sending frame", metadata: [
           "commandNumber": "\(commandCount)",
           "bytes": "\(buffer.readableBytes)", 
