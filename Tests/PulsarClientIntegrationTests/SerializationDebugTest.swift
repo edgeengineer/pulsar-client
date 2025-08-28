@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 import Testing
 
 @testable import PulsarClient
@@ -24,24 +25,30 @@ struct SerializationDebugTest {
     )
 
     // Create frame
+    let testMessage = "Test message"
+    var payload = ByteBufferAllocator().buffer(capacity: testMessage.count)
+    payload.writeString(testMessage)
+    
     let frame = PulsarFrame(
       command: sendCommand,
       metadata: metadata,
-      payload: Data("Test message".utf8)
+      payload: payload
     )
 
     // Encode it
     let encoder = PulsarFrameEncoder()
-    let encoded = try encoder.encode(frame: frame)
+    var encoded = try encoder.encode(frame: frame)
 
     // Print hex dump
-    print("Encoded frame (\(encoded.count) bytes):")
-    let hex = encoded.map { String(format: "%02x", $0) }.joined(separator: " ")
-    print(hex)
+    print("Encoded frame (\(encoded.readableBytes) bytes):")
+    if let bytes = encoded.getBytes(at: encoded.readerIndex, length: encoded.readableBytes) {
+      let hex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+      print(hex)
+    }
 
     // Decode to verify
     let decoder = PulsarFrameDecoder()
-    if let decoded = try decoder.decode(from: encoded) {
+    if let decoded = try decoder.decode(from: &encoded) {
       print("\nDecoded successfully:")
       print("Command type: \(decoded.command.type)")
       print("Producer ID: \(decoded.command.send.producerID)")
@@ -55,8 +62,9 @@ struct SerializationDebugTest {
         print("Publish time: \(metadata.publishTime)")
       }
 
-      if let payload = decoded.payload {
-        print("\nPayload: \(String(data: payload, encoding: .utf8) ?? "nil")")
+      if var payload = decoded.payload {
+        let payloadString = payload.readString(length: payload.readableBytes)
+        print("\nPayload: \(payloadString ?? "nil")")
       }
     }
   }
