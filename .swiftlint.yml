@@ -1,0 +1,60 @@
+# SwiftLint configuration file
+
+# Enable rules
+opt_in_rules:
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - empty_count
+  - empty_string
+
+# Configure force_unwrapping rule to error level
+force_unwrapping:
+  severity: error
+
+# Paths to include
+included:
+  - Sources
+  - Tests
+  - Samples
+
+# Paths to exclude
+excluded:
+  - Sources/PulsarClient/PulsarApi.pb.swift # Generated protobuf file
+  - .build
+  - DerivedData
+  - Package.swift
+
+# Disable rules for specific files/patterns
+disabled_rules:
+  - line_length
+  - file_length
+  - type_body_length
+  - function_body_length
+  
+# Configure other rules
+identifier_name:
+  min_length:
+    warning: 2
+    error: 1
+  max_length:
+    warning: 60
+    error: 100
+  excluded:
+    - id
+    - ok
+    - i
+    - j
+    - k
+    - n
+    - m
+    - x
+    - y
+    - z
+
+type_name:
+  min_length:
+    warning: 3
+    error: 2
+  max_length:
+    warning: 60
+    error: 100

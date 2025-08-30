@@ -60,7 +60,7 @@ actor Connection: PulsarConnection {
 
   internal var pendingRequests:
     [UInt64: AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.Continuation] = [:]
-  internal var channelManager: ChannelManager?
+  internal var channelManager: ChannelManager
   internal var healthMonitoringTask: Task<Void, Never>?
   
   // Channel for outbound commands that need to be sent
@@ -95,7 +95,7 @@ actor Connection: PulsarConnection {
 
   /// Get the channel manager
   func getChannelManager() -> ChannelManager {
-    return channelManager!
+    return channelManager
   }
 
   deinit {
@@ -221,7 +221,7 @@ actor Connection: PulsarConnection {
     await failAllPendingRequests(error: PulsarClientError.connectionFailed("Connection closing"))
 
     // Close channels registered to this connection
-    await channelManager?.closeAll()
+    await channelManager.closeAll()
 
     // Finish outbound commands channel
     outboundCommands.finish()
@@ -264,7 +264,7 @@ actor Connection: PulsarConnection {
     await failAllPendingRequests(error: error)
     
     // Notify channel manager of connection failure
-    await channelManager?.handleConnectionFailure(error: error)
+    await channelManager.handleConnectionFailure(error: error)
     
     // Close the connection
     await close()
@@ -415,7 +415,7 @@ actor Connection: PulsarConnection {
           "sequenceId": "\(frame.command.sendReceipt.sequenceID)"
         ])
         // Forward to producer channel for handling
-        if let producerChannel = await channelManager?.getProducer(id: frame.command.sendReceipt.producerID) {
+        if let producerChannel = await channelManager.getProducer(id: frame.command.sendReceipt.producerID) {
           await producerChannel.handleSendReceipt(frame.command.sendReceipt)
         }
         

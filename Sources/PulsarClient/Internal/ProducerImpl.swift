@@ -250,6 +250,10 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       if metadata.sequenceId == nil {
         metadata.sequenceId = nextSequenceId()
       }
+      
+      guard let sequenceId = metadata.sequenceId else {
+        throw PulsarClientError.invalidConfiguration("Failed to generate sequence ID")
+      }
 
       // Encode message synchronously to ensure no race conditions
       let payload = try schema.encode(message)
@@ -257,7 +261,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // Create metadata synchronously
       let protoMetadata = await connection.commandBuilder.createMessageMetadata(
         producerName: producerName,
-        sequenceId: metadata.sequenceId!,
+        sequenceId: sequenceId,
         publishTime: Date(),
         properties: metadata.properties,
         compressionType: configuration.compressionType
@@ -546,9 +550,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     // Create batch metadata
+    guard let firstSequenceId = batch.messages.first?.sequenceId else {
+      throw PulsarClientError.invalidConfiguration("Batch has no messages")
+    }
+    
     var metadata = await connection.commandBuilder.createMessageMetadata(
       producerName: producerName,
-      sequenceId: batch.messages.first!.sequenceId,
+      sequenceId: firstSequenceId,
       publishTime: Date(),
       properties: [:],  // Batch level properties
       compressionType: configuration.compressionType
@@ -559,7 +567,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     metadata.uncompressedSize = UInt32(batchedPayload.count)
 
     // Create send command with the highest sequence ID
-    let highestSequenceId = batch.messages.last!.sequenceId
+    guard let highestSequenceId = batch.messages.last?.sequenceId else {
+      throw PulsarClientError.invalidConfiguration("Batch has no messages")
+    }
     let sendCommand = await connection.commandBuilder.send(
       producerId: id,
       sequenceId: highestSequenceId,
@@ -793,8 +803,8 @@ private actor MessageBatchBuilder<T: Sendable> {
 
     // Metadata overhead
     size += 50  // Base metadata size
-    if message.metadata.key != nil {
-      size += message.metadata.key!.utf8.count + 5
+    if let key = message.metadata.key {
+      size += key.utf8.count + 5
     }
 
     return size

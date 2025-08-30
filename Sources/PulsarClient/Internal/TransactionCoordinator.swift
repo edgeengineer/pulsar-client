@@ -164,12 +164,14 @@ actor TransactionCoordinatorClient: TransactionCoordinator {
             // Create a connection to the default broker
             let brokerUrl = connectionPool.serviceUrl
             connection = try await connectionPool.getConnection(for: brokerUrl)
-            return connection!
+            guard let connection = connection else {
+                throw PulsarClientError.connectionFailed("Failed to establish connection to broker")
+            }
+            return connection
         }
         
         // Use existing connection's broker
-        connection = firstConnection
-        return connection!
+        return firstConnection
     }
     
     private func mapServerError(_ error: Pulsar_Proto_ServerError, _ message: String) -> PulsarClientError {
