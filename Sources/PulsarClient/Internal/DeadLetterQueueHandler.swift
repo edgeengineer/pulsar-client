@@ -216,7 +216,10 @@ actor DeadLetterQueueHandler<T: Sendable> {
             "topic": "\(dlqTopic)"
         ])
         
-        return dlqProducer!
+        guard let producer = dlqProducer else {
+            throw PulsarClientError.producerClosed
+        }
+        return producer
     }
     
     private func getRetryProducer() async throws -> any ProducerProtocol<T> {
@@ -240,7 +243,10 @@ actor DeadLetterQueueHandler<T: Sendable> {
             "topic": "\(retryTopic)"
         ])
         
-        return retryProducer!
+        guard let producer = retryProducer else {
+            throw PulsarClientError.producerClosed
+        }
+        return producer
     }
     
     /// Dispose of DLQ handler resources

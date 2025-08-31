@@ -119,8 +119,10 @@ func runBatchProducer(client: PulsarClient, logger: Logger, shouldStop: inout Bo
             let duration = Date().timeIntervalSince(startTime)
             
             logger.info("📦 Sent batch #\(batchNumber): \(batchSize) messages in \(String(format: "%.3f", duration))s")
-            logger.info("   First MessageId: \(messageIds.first!)")
-            logger.info("   Last MessageId: \(messageIds.last!)")
+            if let first = messageIds.first, let last = messageIds.last {
+                logger.info("   First MessageId: \(first)")
+                logger.info("   Last MessageId: \(last)")
+            }
             
             // Wait before sending next batch
             try await Task.sleep(for: .seconds(3))
