@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import NIOCore
 import SwiftProtobuf
 
@@ -48,21 +52,9 @@ extension ByteBuffer {
     return buffer
   }
   
-  /// Convert ByteBuffer to Data
-  public func toData() -> Data {
-    var copy = self
-    return copy.readData(length: copy.readableBytes) ?? Data()
-  }
-  
   /// Read data of specified length
   public mutating func readData(length: Int) -> Data? {
     guard let bytes = readBytes(length: length) else { return nil }
-    return Data(bytes)
-  }
-  
-  /// Get data at specific position without moving reader index
-  public func getData(at index: Int, length: Int) -> Data? {
-    guard let bytes = getBytes(at: index, length: length) else { return nil }
     return Data(bytes)
   }
 }
