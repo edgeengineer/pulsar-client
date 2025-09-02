@@ -537,7 +537,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       let metadataData = try singleMeta.serializedData()
 
       // Write metadata size (4 bytes)
-      batchedPayload.writeUInt32BE(UInt32(metadataData.count))
+      batchedPayload.writeInteger(UInt32(metadataData.count), endianness: .big)
 
       // Write metadata
       batchedPayload.writeBytes(metadataData)

@@ -7,18 +7,6 @@ import Testing
 @Suite("ByteBuffer Tests")
 struct ByteBufferTests {
     
-    @Test("Data to ByteBuffer conversion")
-    func testDataToByteBufferConversion() {
-        let testString = "Hello, ByteBuffer!"
-        let data = Data(testString.utf8)
-        
-        let buffer = ByteBuffer.from(data)
-        var mutableBuffer = buffer
-        let bufferString = mutableBuffer.readString(length: mutableBuffer.readableBytes)
-        
-        #expect(bufferString == testString)
-    }
-    
     @Test("Frame encoding with ByteBuffer payload")
     func testFrameEncodingWithByteBuffer() throws {
         let commandBuilder = PulsarCommandBuilder()
@@ -73,11 +61,11 @@ struct ByteBufferTests {
         var buffer = ByteBufferAllocator().buffer(capacity: 4)
         
         let testValue: UInt32 = 0x12345678
-        buffer.writeUInt32BE(testValue)
+        buffer.writeInteger(testValue, endianness: .big)
         
         #expect(buffer.readableBytes == 4)
         
-        let readValue = buffer.readUInt32BE()
+        let readValue = buffer.readInteger(endianness: .big, as: UInt32.self)
         #expect(readValue == testValue)
     }
 }

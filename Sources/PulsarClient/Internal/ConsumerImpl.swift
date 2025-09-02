@@ -515,7 +515,8 @@ actor ConsumerImpl<T>: ConsumerProtocol, AsyncSequence where T: Sendable {
             // Decode message payload - convert ByteBuffer to Data for now
             // TODO: Update schema.decode to accept ByteBuffer directly
             var payloadCopy = payload
-            let payloadData = payloadCopy.readData(length: payloadCopy.readableBytes) ?? Data()
+            let payloadBytes = payloadCopy.readBytes(length: payloadCopy.readableBytes) ?? []
+            let payloadData = Data(payloadBytes)
             let value = try schema.decode(payloadData)
             
             // Create MessageMetadata from protocol buffer

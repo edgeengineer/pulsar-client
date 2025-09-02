@@ -87,8 +87,8 @@ public struct PulsarFrameEncoder {
       var buffer = ByteBufferAllocator().buffer(capacity: Int(commandSize) + 8)
       let totalSize = commandSize + 4  // 4 bytes for command size
 
-      buffer.writeUInt32BE(totalSize)
-      buffer.writeUInt32BE(commandSize)
+      buffer.writeInteger(totalSize, endianness: .big)
+      buffer.writeInteger(commandSize, endianness: .big)
       buffer.writeBytes(commandData)
 
       return buffer
@@ -118,7 +118,7 @@ public struct PulsarFrameEncoder {
 
     // Build metadata + payload section for checksum calculation
     var metadataPayloadSection = ByteBufferAllocator().buffer(capacity: Int(metadataSize) + 4 + payload.readableBytes)
-    metadataPayloadSection.writeUInt32BE(metadataSize)
+    metadataPayloadSection.writeInteger(metadataSize, endianness: .big)
     metadataPayloadSection.writeBytes(metadataData)
     if payload.readableBytes > 0 {
       var payloadCopy = payload
@@ -132,11 +132,11 @@ public struct PulsarFrameEncoder {
     let totalSize = UInt32(4 + commandData.count + 4 + 2 + metadataPayloadSection.readableBytes)  // commandSize + command + checksum + magic + metadata+payload
     var buffer = ByteBufferAllocator().buffer(capacity: Int(totalSize) + 4)
 
-    buffer.writeUInt32BE(totalSize)
-    buffer.writeUInt32BE(commandSize)
+    buffer.writeInteger(totalSize, endianness: .big)
+    buffer.writeInteger(commandSize, endianness: .big)
     buffer.writeBytes(commandData)  
     buffer.writeBytes([0x0e, 0x01])  // Magic number
-    buffer.writeUInt32BE(checksum)
+    buffer.writeInteger(checksum, endianness: .big)
     var metadataPayloadCopy = metadataPayloadSection
     buffer.writeBuffer(&metadataPayloadCopy)
 
@@ -146,7 +146,8 @@ public struct PulsarFrameEncoder {
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
   private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
     var bufferCopy = buffer
-    let data = bufferCopy.readData(length: bufferCopy.readableBytes) ?? Data()
+    let bytes = bufferCopy.readBytes(length: bufferCopy.readableBytes) ?? []
+    let data = Data(bytes)
     return CyclicRedundancyCheck.crc32c(bytes: data)
   }
 }
@@ -163,7 +164,7 @@ public struct PulsarFrameDecoder {
     let originalReaderIndex = buffer.readerIndex
 
     // Read total size
-    guard let totalSize = buffer.readUInt32BE() else {
+    guard let totalSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
       buffer.moveReaderIndex(to: originalReaderIndex)
       return nil
     }
@@ -174,16 +175,17 @@ public struct PulsarFrameDecoder {
     }
 
     // Read command size
-    guard let commandSize = buffer.readUInt32BE() else {
+    guard let commandSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
       buffer.moveReaderIndex(to: originalReaderIndex)
       return nil
     }
 
     // Read command
-    guard let commandData = buffer.readData(length: Int(commandSize)) else {
+    guard let commandBytes = buffer.readBytes(length: Int(commandSize)) else {
       buffer.moveReaderIndex(to: originalReaderIndex)
       return nil
     }
+    let commandData = Data(commandBytes)
     let command = try Pulsar_Proto_BaseCommand(serializedBytes: commandData)
 
     var metadata: Pulsar_Proto_MessageMetadata?
@@ -205,7 +207,7 @@ public struct PulsarFrameDecoder {
       }
 
       // Read checksum (4 bytes)
-      guard let checksum = buffer.readUInt32BE() else {
+      guard let checksum = buffer.readInteger(endianness: .big, as: UInt32.self) else {
         buffer.moveReaderIndex(to: originalReaderIndex)
         return nil
       }
@@ -214,7 +216,7 @@ public struct PulsarFrameDecoder {
       let checksumStartIndex = buffer.readerIndex
 
       // Read metadata size and metadata
-      guard let metadataSize = buffer.readUInt32BE() else {
+      guard let metadataSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
         buffer.moveReaderIndex(to: originalReaderIndex)
         return nil
       }
@@ -250,7 +252,8 @@ public struct PulsarFrameDecoder {
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
   private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
     var bufferCopy = buffer
-    let data = bufferCopy.readData(length: bufferCopy.readableBytes) ?? Data()
+    let bytes = bufferCopy.readBytes(length: bufferCopy.readableBytes) ?? []
+    let data = Data(bytes)
     return CyclicRedundancyCheck.crc32c(bytes: data)
   }
 }
@@ -304,7 +307,8 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
 
     if let authData = authData {
       var authDataCopy = authData
-      connect.authData = authDataCopy.readData(length: authDataCopy.readableBytes) ?? Data()
+      let authBytes = authDataCopy.readBytes(length: authDataCopy.readableBytes) ?? []
+      connect.authData = Data(authBytes)
     }
 
     command.connect = connect
