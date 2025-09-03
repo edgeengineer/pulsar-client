@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import NIOCore
 
 /// Channel state
 enum ChannelState: Sendable {
@@ -135,12 +136,12 @@ actor ConsumerChannel: PulsarChannel {
 
   // Message delivery callback
   internal var messageHandler:
-    ((Pulsar_Proto_CommandMessage, Data, Pulsar_Proto_MessageMetadata) async -> Void)?
+    ((Pulsar_Proto_CommandMessage, ByteBuffer, Pulsar_Proto_MessageMetadata) async -> Void)?
 
   // Per-consumer inbound FIFO dispatcher state
   private typealias InboundMessage = (
     msg: Pulsar_Proto_CommandMessage,
-    payload: Data,
+    payload: ByteBuffer,
     metadata: Pulsar_Proto_MessageMetadata
   )
   private var inboundBuffer: [InboundMessage] = []
@@ -180,7 +181,7 @@ actor ConsumerChannel: PulsarChannel {
 
   /// Set the message handler callback
   func setMessageHandler(
-    _ handler: @escaping (Pulsar_Proto_CommandMessage, Data, Pulsar_Proto_MessageMetadata) async ->
+    _ handler: @escaping (Pulsar_Proto_CommandMessage, ByteBuffer, Pulsar_Proto_MessageMetadata) async ->
       Void
   ) {
     self.messageHandler = handler
@@ -256,7 +257,7 @@ actor ConsumerChannel: PulsarChannel {
 
   func enqueueInbound(
     message: Pulsar_Proto_CommandMessage,
-    payload: Data,
+    payload: ByteBuffer,
     metadata: Pulsar_Proto_MessageMetadata
   ) async {
     guard state == .active else { return }

@@ -263,6 +263,7 @@ struct MockProducer<T: Sendable>: ProducerProtocol {
 // Mock Consumer for testing
 struct MockConsumer<T: Sendable>: ConsumerProtocol {
     typealias MessageType = T
+    typealias Element = Message<T>
     
     var topics: [String] { ["mock-topic"] }
     var subscription: String { "mock-subscription" }
@@ -279,19 +280,18 @@ struct MockConsumer<T: Sendable>: ConsumerProtocol {
     func stateChangedTo(_ state: ClientState, timeout: TimeInterval) async throws -> ClientState { state }
     func stateChangedFrom(_ state: ClientState, timeout: TimeInterval) async throws -> ClientState { state }
     
-    // ConsumerProtocol methods
-    func receive() async throws -> Message<T> {
-        // Return a default message for testing
-        fatalError("Mock receive not implemented for actual use")
+    // AsyncSequence conformance
+    struct AsyncIterator: AsyncIteratorProtocol {
+        typealias Element = Message<T>
+        
+        mutating func next() async throws -> Message<T>? {
+            // Return nil to end the sequence for testing
+            return nil
+        }
     }
     
-    func receive(timeout: TimeInterval) async throws -> Message<T> {
-        // Return a default message for testing
-        fatalError("Mock receive not implemented for actual use")
-    }
-    
-    func receiveBatch(maxMessages: Int) async throws -> [Message<T>] {
-        return []
+    func makeAsyncIterator() -> AsyncIterator {
+        return AsyncIterator()
     }
     
     func acknowledge(_ message: Message<T>) async throws {}
