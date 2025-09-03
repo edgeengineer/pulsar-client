@@ -147,8 +147,7 @@ public struct PulsarFrameEncoder {
   private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
     var bufferCopy = buffer
     let bytes = bufferCopy.readBytes(length: bufferCopy.readableBytes) ?? []
-    let data = Data(bytes)
-    return CyclicRedundancyCheck.crc32c(bytes: data)
+    return CyclicRedundancyCheck.crc32c(bytes: bytes)
   }
 }
 
@@ -253,8 +252,7 @@ public struct PulsarFrameDecoder {
   private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
     var bufferCopy = buffer
     let bytes = bufferCopy.readBytes(length: bufferCopy.readableBytes) ?? []
-    let data = Data(bytes)
-    return CyclicRedundancyCheck.crc32c(bytes: data)
+    return CyclicRedundancyCheck.crc32c(bytes: bytes)
   }
 }
 
