@@ -145,9 +145,7 @@ public struct PulsarFrameEncoder {
 
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
   private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
-    var bufferCopy = buffer
-    let bytes = bufferCopy.readBytes(length: bufferCopy.readableBytes) ?? []
-    return CyclicRedundancyCheck.crc32c(bytes: bytes)
+    return CyclicRedundancyCheck.crc32c(bytes: buffer.readableBytesView)
   }
 }
 
@@ -211,9 +209,26 @@ public struct PulsarFrameDecoder {
         return nil
       }
 
-      // Save position for checksum verification
-      let checksumStartIndex = buffer.readerIndex
+      // Get the remaining bytes for checksum verification
+      let checksumDataLength = remainingSize - 6  // minus magic(2) + checksum(4)
+      
+      // Peek at the data for checksum calculation without moving reader index
+      guard let checksumData = buffer.getBytes(at: buffer.readerIndex, length: checksumDataLength) else {
+        buffer.moveReaderIndex(to: originalReaderIndex)
+        return nil
+      }
+      
+      // Create a buffer for checksum calculation
+      var checksumBuffer = ByteBufferAllocator().buffer(capacity: checksumDataLength)
+      checksumBuffer.writeBytes(checksumData)
+      
+      // Calculate and verify checksum
+      let calculatedChecksum = calculateCRC32C(buffer: checksumBuffer)
+      guard calculatedChecksum == checksum else {
+        throw PulsarClientError.protocolError("Frame checksum mismatch")
+      }
 
+      // Now read the actual data
       // Read metadata size and metadata
       guard let metadataSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
         buffer.moveReaderIndex(to: originalReaderIndex)
@@ -233,15 +248,6 @@ public struct PulsarFrameDecoder {
         if payloadSize > 0 {
           payload = buffer.readSlice(length: payloadSize)
         }
-
-        // Verify checksum
-        let endIndex = buffer.readerIndex
-        let checksumLength = endIndex - checksumStartIndex
-        let checksumSlice = buffer.getSlice(at: checksumStartIndex, length: checksumLength) ?? ByteBuffer()
-        let calculatedChecksum = calculateCRC32C(buffer: checksumSlice)
-        guard calculatedChecksum == checksum else {
-          throw PulsarClientError.protocolError("Frame checksum mismatch")
-        }
       }
     }
 
@@ -250,9 +256,7 @@ public struct PulsarFrameDecoder {
 
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
   private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
-    var bufferCopy = buffer
-    let bytes = bufferCopy.readBytes(length: bufferCopy.readableBytes) ?? []
-    return CyclicRedundancyCheck.crc32c(bytes: bytes)
+    return CyclicRedundancyCheck.crc32c(bytes: buffer.readableBytesView)
   }
 }
 
