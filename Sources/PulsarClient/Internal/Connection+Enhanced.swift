@@ -315,7 +315,7 @@ extension Connection {
         return
       }
 
-      await self.channelManager?.handleIncomingMessage(message, payload: payload, metadata: metadata)
+      await self.channelManager.handleIncomingMessage(message, payload: payload, metadata: metadata)
     }
   }
 
@@ -325,7 +325,7 @@ extension Connection {
     Task { [weak self] in
       guard let self = self else { return }
       // Forward to the producer channel
-      if let producerChannel = await self.channelManager?.getProducer(id: receipt.producerID) {
+      if let producerChannel = await self.channelManager.getProducer(id: receipt.producerID) {
         self.logger.trace(
           "Found producer channel, forwarding receipt", metadata: ["producerId": "\(receipt.producerID)", "sequenceId": "\(receipt.sequenceID)"]
         )
@@ -338,19 +338,19 @@ extension Connection {
 
   private func handleActiveConsumerChange(_ change: Pulsar_Proto_CommandActiveConsumerChange) {
     Task { [weak self] in
-      await self?.channelManager?.handleActiveConsumerChange(change)
+      await self?.channelManager.handleActiveConsumerChange(change)
     }
   }
 
   private func handleCloseProducer(_ close: Pulsar_Proto_CommandCloseProducer) {
     Task { [weak self] in
-      await self?.channelManager?.handleCloseProducer(close)
+      await self?.channelManager.handleCloseProducer(close)
     }
   }
 
   private func handleCloseConsumer(_ close: Pulsar_Proto_CommandCloseConsumer) {
     Task { [weak self] in
-      await self?.channelManager?.handleCloseConsumer(close)
+      await self?.channelManager.handleCloseConsumer(close)
     }
   }
 
@@ -783,8 +783,8 @@ extension Connection {
       totalMessages: totalMessagesSent + totalMessagesReceived,
       totalBytesSent: totalBytesSent,
       totalBytesReceived: totalBytesReceived,
-      activeProducers: await channelManager?.getProducerCount() ?? 0,
-      activeConsumers: await channelManager?.getConsumerCount() ?? 0
+      activeProducers: await channelManager.getProducerCount(),
+      activeConsumers: await channelManager.getConsumerCount()
     )
   }
 }

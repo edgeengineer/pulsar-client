@@ -265,7 +265,7 @@ public final class PulsarClient: PulsarClientProtocol {
             producerProperties: [:]
         )
         
-        let channelManager = await connection.channelManager ?? ChannelManager()
+        let channelManager = await connection.channelManager
         
         // Create producer channel and register it
         let producerChannel = ProducerChannel(
@@ -304,7 +304,7 @@ public final class PulsarClient: PulsarClientProtocol {
         
         // Get connection for the topic
         let connection = try await implementation.connectionPool.getConnectionForTopic(options.topic)
-        let channelManager = await connection.channelManager ?? ChannelManager()
+        let channelManager = await connection.channelManager
         
         // CRITICAL: Pre-allocate consumer ID and register channel BEFORE sending SUBSCRIBE
         // This matches the C# DotPulsar implementation pattern

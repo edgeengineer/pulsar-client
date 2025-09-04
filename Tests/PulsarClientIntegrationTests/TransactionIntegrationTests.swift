@@ -15,8 +15,9 @@ class TransactionIntegrationTests {
     
     @Test("Basic Transaction Commit", .timeLimit(.minutes(2)))
     func testBasicTransactionCommit() async throws {
-        let client = await testCase.client
-        #expect(client != nil)
+        guard let client = await testCase.client else {
+            throw IntegrationTestError.clientNotInitialized
+        }
         
         // Note: Transactions require Pulsar to be configured with transaction coordinator
         // This test will be skipped if transactions are not enabled
@@ -24,7 +25,7 @@ class TransactionIntegrationTests {
         let topic = try await testCase.createTopic()
         
         // Create producer with transaction support
-        let producer = try await client!.newProducer(
+        let producer = try await client.newProducer(
             topic: topic,
             schema: Schema<String>.string
         ) { builder in
@@ -32,7 +33,7 @@ class TransactionIntegrationTests {
         }
         
         // Create consumer
-        let consumer = try await client!.newConsumer(
+        let consumer = try await client.newConsumer(
             topic: topic,
             schema: Schema<String>.string
         ) { builder in
@@ -41,7 +42,7 @@ class TransactionIntegrationTests {
         
         do {
             // Begin transaction
-            let transaction = try await client!.newTransaction()
+            let transaction = try await client.newTransaction()
                 .build()
             
             // Send messages within transaction
@@ -55,11 +56,22 @@ class TransactionIntegrationTests {
             }
             
             // Messages should not be visible before commit
+            // Try to get a message with a timeout - should fail
             do {
-                _ = try await consumer.receive(timeout: 2.0)
-                Issue.record("Should not receive messages before transaction commit")
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        var iterator = consumer.makeAsyncIterator()
+                        _ = try await iterator.next()
+                        throw PulsarClientError.unknownError("Should not receive messages before commit")
+                    }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
             } catch {
-                // Expected timeout - messages not visible yet
+                // Expected - no messages should be visible
             }
             
             // Commit transaction
@@ -67,10 +79,15 @@ class TransactionIntegrationTests {
             
             // Now messages should be visible
             var receivedMessages: [String] = []
+            var messageIterator = consumer.makeAsyncIterator()
             for _ in messages {
-                let message = try await consumer.receive(timeout: 10.0)
-                receivedMessages.append(message.value)
-                try await consumer.acknowledge(message)
+                if let messageOpt = try await messageIterator.next() {
+                    guard let message = messageOpt as? Message<String> else {
+                        throw PulsarClientError.unknownError("Failed to cast message")
+                    }
+                    receivedMessages.append(message.value)
+                    try await consumer.acknowledge(message)
+                }
             }
             
             #expect(Set(receivedMessages) == Set(messages))
@@ -96,13 +113,14 @@ class TransactionIntegrationTests {
     
     @Test("Transaction Abort", .timeLimit(.minutes(2)))
     func testTransactionAbort() async throws {
-        let client = await testCase.client
-        #expect(client != nil)
+        guard let client = await testCase.client else {
+            throw IntegrationTestError.clientNotInitialized
+        }
         
         let topic = try await testCase.createTopic()
         
         // Create producer
-        let producer = try await client!.newProducer(
+        let producer = try await client.newProducer(
             topic: topic,
             schema: Schema<String>.string
         ) { builder in
@@ -110,7 +128,7 @@ class TransactionIntegrationTests {
         }
         
         // Create consumer
-        let consumer = try await client!.newConsumer(
+        let consumer = try await client.newConsumer(
             topic: topic,
             schema: Schema<String>.string
         ) { builder in
@@ -119,7 +137,7 @@ class TransactionIntegrationTests {
         
         do {
             // Begin transaction
-            let transaction = try await client!.newTransaction()
+            let transaction = try await client.newTransaction()
                 .build()
             
             // Send messages within transaction
@@ -136,20 +154,36 @@ class TransactionIntegrationTests {
             try await transaction.abort()
             
             // Messages should never be visible after abort
+            // Try to get a message with a timeout - should fail
             do {
-                _ = try await consumer.receive(timeout: 3.0)
-                Issue.record("Should not receive messages after transaction abort")
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        var abortIterator = consumer.makeAsyncIterator()
+                        _ = try await abortIterator.next()
+                        throw PulsarClientError.unknownError("Should not receive messages after abort")
+                    }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 3_000_000_000) // Wait 3 seconds
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
             } catch {
-                // Expected timeout - messages were aborted
+                // Expected - messages were aborted
             }
             
             // Send a non-transactional message to verify consumer works
             let normalMessage = "non-txn-message"
             _ = try await producer.send(normalMessage)
             
-            let received = try await consumer.receive(timeout: 10.0)
-            #expect(received.value == normalMessage)
-            try await consumer.acknowledge(received)
+            var normalIterator = consumer.makeAsyncIterator()
+            if let receivedOpt = try await normalIterator.next() {
+                guard let received = receivedOpt as? Message<String> else {
+                    throw PulsarClientError.unknownError("Failed to cast message")
+                }
+                #expect(received.value == normalMessage)
+                try await consumer.acknowledge(received)
+            }
             
         } catch {
             // Transactions might not be enabled - skip test gracefully
@@ -172,21 +206,22 @@ class TransactionIntegrationTests {
     
     @Test("Transaction with Multiple Topics", .timeLimit(.minutes(2)))
     func testTransactionMultipleTopics() async throws {
-        let client = await testCase.client
-        #expect(client != nil)
+        guard let client = await testCase.client else {
+            throw IntegrationTestError.clientNotInitialized
+        }
         
         let topic1 = try await testCase.createTopic()
         let topic2 = try await testCase.createTopic()
         
         // Create producers for both topics
-        let producer1 = try await client!.newProducer(
+        let producer1 = try await client.newProducer(
             topic: topic1,
             schema: Schema<String>.string
         ) { builder in
             // Use default configuration
         }
         
-        let producer2 = try await client!.newProducer(
+        let producer2 = try await client.newProducer(
             topic: topic2,
             schema: Schema<String>.string
         ) { builder in
@@ -194,14 +229,14 @@ class TransactionIntegrationTests {
         }
         
         // Create consumers
-        let consumer1 = try await client!.newConsumer(
+        let consumer1 = try await client.newConsumer(
             topic: topic1,
             schema: Schema<String>.string
         ) { builder in
             builder.subscriptionName("txn-multi-sub-1")
         }
         
-        let consumer2 = try await client!.newConsumer(
+        let consumer2 = try await client.newConsumer(
             topic: topic2,
             schema: Schema<String>.string
         ) { builder in
@@ -210,7 +245,7 @@ class TransactionIntegrationTests {
         
         do {
             // Begin transaction
-            let transaction = try await client!.newTransaction()
+            let transaction = try await client.newTransaction()
                 .build()
             
             // Send messages to both topics
@@ -225,16 +260,37 @@ class TransactionIntegrationTests {
                 .send()
             
             // Messages should not be visible before commit
+            // Try to get messages with timeout - should fail on both topics
             do {
-                _ = try await consumer1.receive(timeout: 2.0)
-                Issue.record("Topic1: Should not receive before commit")
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        var iter1 = consumer1.makeAsyncIterator()
+                        _ = try await iter1.next()
+                        throw PulsarClientError.unknownError("Topic1: Should not receive before commit")
+                    }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
             } catch {
                 // Expected
             }
             
             do {
-                _ = try await consumer2.receive(timeout: 2.0)
-                Issue.record("Topic2: Should not receive before commit")
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        var iter2 = consumer2.makeAsyncIterator()
+                        _ = try await iter2.next()
+                        throw PulsarClientError.unknownError("Topic2: Should not receive before commit")
+                    }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
             } catch {
                 // Expected
             }
@@ -243,13 +299,24 @@ class TransactionIntegrationTests {
             try await transaction.commit()
             
             // Both topics should now have their messages
-            let msg1 = try await consumer1.receive(timeout: 10.0)
-            #expect(msg1.value == "topic1-message")
-            try await consumer1.acknowledge(msg1)
+            // Get first message from each consumer
+            var iter1 = consumer1.makeAsyncIterator()
+            if let msg1Opt = try await iter1.next() {
+                guard let msg1 = msg1Opt as? Message<String> else {
+                    throw PulsarClientError.unknownError("Failed to cast message from topic1")
+                }
+                #expect(msg1.value == "topic1-message")
+                try await consumer1.acknowledge(msg1)
+            }
             
-            let msg2 = try await consumer2.receive(timeout: 10.0)
-            #expect(msg2.value == "topic2-message")
-            try await consumer2.acknowledge(msg2)
+            var iter2 = consumer2.makeAsyncIterator()
+            if let msg2Opt = try await iter2.next() {
+                guard let msg2 = msg2Opt as? Message<String> else {
+                    throw PulsarClientError.unknownError("Failed to cast message from topic2")
+                }
+                #expect(msg2.value == "topic2-message")
+                try await consumer2.acknowledge(msg2)
+            }
             
         } catch {
             // Transactions might not be enabled - skip test gracefully

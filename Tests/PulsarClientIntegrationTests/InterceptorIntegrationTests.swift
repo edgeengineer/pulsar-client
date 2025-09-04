@@ -148,8 +148,14 @@ class InterceptorIntegrationTests {
         #expect(await interceptor.lastAckedMessageId != nil)
         
         // Verify messages contain interceptor properties
+        var consumerIterator = consumer.makeAsyncIterator()
         for i in 0..<testMessages.count {
-            let receivedMessage = try await consumer.receive(timeout: 10.0)
+            guard let receivedMessageOpt = try await consumerIterator.next() else {
+                throw PulsarClientError.consumerClosed
+            }
+            guard let receivedMessage = receivedMessageOpt as? Message<String> else {
+                throw PulsarClientError.unknownError("Failed to cast message")
+            }
             
             #expect(receivedMessage.value == testMessages[i])
             #expect(receivedMessage.metadata.properties["intercepted"] == "true")
@@ -196,8 +202,14 @@ class InterceptorIntegrationTests {
         }
         
         // Receive and acknowledge messages
+        var messageIterator = consumer.makeAsyncIterator()
         for i in 0..<testMessages.count {
-            let message = try await consumer.receive(timeout: 10.0)
+            guard let messageOpt = try await messageIterator.next() else {
+                throw PulsarClientError.consumerClosed
+            }
+            guard let message = messageOpt as? Message<String> else {
+                throw PulsarClientError.unknownError("Failed to cast message")
+            }
             
             // Verify interceptor modified the message
             #expect(message.metadata.properties["consumed"] == "true")
@@ -213,7 +225,12 @@ class InterceptorIntegrationTests {
         
         // Test negative acknowledgment
         _ = try await producer.send("nack-test")
-        let nackMessage = try await consumer.receive(timeout: 10.0)
+        guard let nackMessageOpt = try await messageIterator.next() else {
+            throw PulsarClientError.consumerClosed
+        }
+        guard let nackMessage = nackMessageOpt as? Message<String> else {
+            throw PulsarClientError.unknownError("Failed to cast message")
+        }
         try await consumer.negativeAcknowledge(nackMessage)
         
         #expect(await interceptor.onNackCount == 1)
@@ -261,7 +278,13 @@ class InterceptorIntegrationTests {
         #expect(await interceptor2.onAckCount == 1)
         
         // Receive and verify message
-        let receivedMessage = try await consumer.receive(timeout: 10.0)
+        var iterator = consumer.makeAsyncIterator()
+        guard let receivedMessageOpt = try await iterator.next() else {
+            throw PulsarClientError.consumerClosed
+        }
+        guard let receivedMessage = receivedMessageOpt as? Message<String> else {
+            throw PulsarClientError.unknownError("Failed to cast message")
+        }
         #expect(receivedMessage.value == testMessage)
         
         // Both interceptors should have modified the message

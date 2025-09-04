@@ -145,17 +145,27 @@ class MultiTopicProducerIntegrationTests {
         var topic1Messages: [String] = []
         var topic2Messages: [String] = []
         
-        // Try to receive up to 3 messages from each topic
-        for _ in 0..<3 {
-            if let msg = try? await consumer1.receive(timeout: 2.0) {
-                topic1Messages.append(msg.value)
-                try await consumer1.acknowledge(msg)
+        // Collect messages from both consumers
+        var messageCount = 0
+        for try await msg in consumer1 {
+            guard let message = msg as? Message<String> else {
+                throw PulsarClientError.unknownError("Failed to cast message from consumer1")
             }
-            
-            if let msg = try? await consumer2.receive(timeout: 2.0) {
-                topic2Messages.append(msg.value)
-                try await consumer2.acknowledge(msg)
+            topic1Messages.append(message.value)
+            try await consumer1.acknowledge(message)
+            messageCount += 1
+            if messageCount >= 3 { break }
+        }
+        
+        messageCount = 0
+        for try await msg in consumer2 {
+            guard let message = msg as? Message<String> else {
+                throw PulsarClientError.unknownError("Failed to cast message from consumer2")
             }
+            topic2Messages.append(message.value)
+            try await consumer2.acknowledge(message)
+            messageCount += 1
+            if messageCount >= 3 { break }
         }
         
         // Verify all messages were sent
@@ -175,11 +185,17 @@ class MultiTopicProducerIntegrationTests {
         timeout: TimeInterval
     ) async throws -> [Message<String>] {
         var messages: [Message<String>] = []
+        var receivedCount = 0
         
-        for _ in 0..<count {
-            if let message = try? await consumer.receive(timeout: timeout) {
-                messages.append(message)
-                try await consumer.acknowledge(message)
+        for try await msg in consumer {
+            guard let message = msg as? Message<String> else {
+                throw PulsarClientError.unknownError("Failed to cast message in receiveMessages helper")
+            }
+            messages.append(message)
+            try await consumer.acknowledge(message)
+            receivedCount += 1
+            if receivedCount >= count {
+                break
             }
         }
         

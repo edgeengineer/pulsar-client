@@ -91,7 +91,12 @@ class ConsumerIntegrationTests {
     }
 
     // Receive but don't acknowledge first message
-    let firstMessage = try await consumer.receive(timeout: 15.0)
+    var iterator = consumer.makeAsyncIterator()
+    let firstMessageOpt = try await iterator.next()
+    #expect(firstMessageOpt != nil)
+    guard let firstMessage = firstMessageOpt as? Message<String> else {
+      throw PulsarClientError.unknownError("Failed to cast message")
+    }
     #expect(firstMessage.value == "Message 0")
 
     // Close and reopen consumer (wait until broker fully detaches first consumer)
@@ -120,7 +125,12 @@ class ConsumerIntegrationTests {
     }()
 
     // Should receive unacknowledged message again
-    let redeliveredMessage = try await consumer2.receive(timeout: 15.0)
+    var iterator2 = consumer2.makeAsyncIterator()
+    let redeliveredMessageOpt = try await iterator2.next()
+    #expect(redeliveredMessageOpt != nil)
+    guard let redeliveredMessage = redeliveredMessageOpt as? Message<String> else {
+      throw PulsarClientError.unknownError("Failed to cast message")
+    }
     #expect(redeliveredMessage.value == "Message 0")
 
     // Acknowledge this time
