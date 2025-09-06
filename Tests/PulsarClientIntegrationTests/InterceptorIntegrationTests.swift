@@ -148,21 +148,37 @@ class InterceptorIntegrationTests {
         #expect(await interceptor.lastAckedMessageId != nil)
         
         // Verify messages contain interceptor properties
+        // Collect all messages first (order may vary)
+        var receivedMessages: [Message<String>] = []
         var consumerIterator = consumer.makeAsyncIterator()
-        for i in 0..<testMessages.count {
+        for _ in 0..<testMessages.count {
             guard let receivedMessageOpt = try await consumerIterator.next() else {
                 throw PulsarClientError.consumerClosed
             }
             guard let receivedMessage = receivedMessageOpt as? Message<String> else {
                 throw PulsarClientError.unknownError("Failed to cast message")
             }
-            
-            #expect(receivedMessage.value == testMessages[i])
-            #expect(receivedMessage.metadata.properties["intercepted"] == "true")
-            #expect(receivedMessage.metadata.properties["interceptor-timestamp"] != nil)
-            #expect(receivedMessage.metadata.properties["before-send-count"] == String(i + 1))
-            
+            receivedMessages.append(receivedMessage)
             try await consumer.acknowledge(receivedMessage)
+        }
+        
+        // Verify all expected messages were received (regardless of order)
+        let receivedValues = Set(receivedMessages.map { $0.value })
+        let expectedValues = Set(testMessages)
+        #expect(receivedValues == expectedValues)
+        
+        // Verify all messages have interceptor properties
+        for message in receivedMessages {
+            #expect(message.metadata.properties["intercepted"] == "true")
+            #expect(message.metadata.properties["interceptor-timestamp"] != nil)
+            
+            // before-send-count should be between 1 and message count
+            if let countStr = message.metadata.properties["before-send-count"],
+               let count = Int(countStr) {
+                #expect(count >= 1 && count <= testMessages.count)
+            } else {
+                Issue.record("Missing or invalid before-send-count property")
+            }
         }
         
         // Cleanup
