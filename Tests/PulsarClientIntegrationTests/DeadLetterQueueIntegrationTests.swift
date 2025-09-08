@@ -92,8 +92,8 @@ class DeadLetterQueueIntegrationTests {
         }
         
         // After max redeliveries, message should go to DLQ
-        // Small delay to ensure message processing is complete
-        try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+        // Wait longer to ensure message processing and DLQ transfer is complete
+        try await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
         
         print("DLQ Test: Checking if message is still in main topic...")
         // Try to receive from main topic (should not get any message as it's in DLQ)
