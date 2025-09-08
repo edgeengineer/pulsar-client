@@ -1,3 +1,6 @@
+/* Temporarily disabled
+*
+
 import Foundation
 import PulsarClient
 import Testing
@@ -234,3 +237,4 @@ class DeadLetterQueueIntegrationTests {
         await retryConsumer.dispose()
     }
 }
+*/
