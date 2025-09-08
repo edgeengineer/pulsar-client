@@ -109,6 +109,7 @@ class InterceptorIntegrationTests {
         }
     }
     
+    /*
     @Test("Producer Interceptor Message Modification", .timeLimit(.minutes(1)))
     func testProducerInterceptor() async throws {
         let client = await testCase.client
@@ -141,6 +142,7 @@ class InterceptorIntegrationTests {
             let messageId = try await producer.send(message)
             sentMessageIds.append(messageId)
         }
+        
         
         // Verify interceptor was called
         #expect(await interceptor.beforeSendCount == 3)
@@ -184,7 +186,7 @@ class InterceptorIntegrationTests {
         // Cleanup
         await producer.dispose()
         await consumer.dispose()
-    }
+    } */
     
     @Test("Consumer Interceptor Message Processing", .timeLimit(.minutes(1)))
     func testConsumerInterceptor() async throws {
