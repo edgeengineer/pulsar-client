@@ -24,11 +24,11 @@ public struct PulsarFrame: Sendable {
   public let commandSize: UInt32
   public let command: Pulsar_Proto_BaseCommand
   public let metadata: Pulsar_Proto_MessageMetadata?
-  public let payload: Data?
+  public let payload: ByteBuffer?
 
   public init(
     command: Pulsar_Proto_BaseCommand, metadata: Pulsar_Proto_MessageMetadata? = nil,
-    payload: Data? = nil
+    payload: ByteBuffer? = nil
   ) {
     self.command = command
     self.metadata = metadata
@@ -65,7 +65,7 @@ public struct PulsarFrame: Sendable {
     }
 
     if let payload = payload {
-      totalSize += UInt32(payload.count)
+      totalSize += UInt32(payload.readableBytes)
     }
 
     self.totalSize = totalSize
@@ -77,18 +77,19 @@ public struct PulsarFrameEncoder {
   public init() {}
 
   /// Encode a frame to bytes (matches C# DotPulsar protocol specification)
-  public func encode(frame: PulsarFrame) throws -> Data {
+  public func encode(frame: PulsarFrame) throws -> ByteBuffer {
+    // Serialize command
     let commandData = try frame.command.serializedData()
     let commandSize = UInt32(commandData.count)
 
     // Simple frame (command only) - matches C# Serialize(BaseCommand command)
     if frame.metadata == nil && frame.payload == nil {
-      var buffer = Data()
+      var buffer = ByteBufferAllocator().buffer(capacity: Int(commandSize) + 8)
       let totalSize = commandSize + 4  // 4 bytes for command size
 
-      buffer.append(contentsOf: withUnsafeBytes(of: totalSize.bigEndian) { Array($0) })
-      buffer.append(contentsOf: withUnsafeBytes(of: commandSize.bigEndian) { Array($0) })
-      buffer.append(commandData)
+      buffer.writeInteger(totalSize, endianness: .big)
+      buffer.writeInteger(commandSize, endianness: .big)
+      buffer.writeBytes(commandData)
 
       return buffer
     }
@@ -98,6 +99,7 @@ public struct PulsarFrameEncoder {
       throw PulsarClientError.protocolError("Metadata required for message frames")
     }
 
+    // Serialize metadata
     let metadataData: Data
     do {
       metadataData = try metadata.serializedData()
@@ -112,35 +114,38 @@ public struct PulsarFrameEncoder {
       fatalError("Failed to serialize metadata in encoder: \(error)")
     }
     let metadataSize = UInt32(metadataData.count)
-    let payload = frame.payload ?? Data()
+    let payload = frame.payload ?? ByteBuffer()
 
     // Build metadata + payload section for checksum calculation
-    var metadataPayloadSection = Data()
-    metadataPayloadSection.append(
-      contentsOf: withUnsafeBytes(of: metadataSize.bigEndian) { Array($0) })
-    metadataPayloadSection.append(metadataData)
-    metadataPayloadSection.append(payload)
+    var metadataPayloadSection = ByteBufferAllocator().buffer(capacity: Int(metadataSize) + 4 + payload.readableBytes)
+    metadataPayloadSection.writeInteger(metadataSize, endianness: .big)
+    metadataPayloadSection.writeBytes(metadataData)
+    if payload.readableBytes > 0 {
+      var payloadCopy = payload
+      metadataPayloadSection.writeBuffer(&payloadCopy)
+    }
 
     // Calculate CRC32C checksum
-    let checksum = calculateCRC32C(data: metadataPayloadSection)
+    let checksum = calculateCRC32C(buffer: metadataPayloadSection)
 
     // Build complete frame: totalSize + commandSize + command + checksum + magicNumber + metadataSize + metadata + payload
-    var buffer = Data()
-    let totalSize = UInt32(4 + commandData.count + 4 + 2 + metadataPayloadSection.count)  // commandSize + command + checksum + magic + metadata+payload
+    let totalSize = UInt32(4 + commandData.count + 4 + 2 + metadataPayloadSection.readableBytes)  // commandSize + command + checksum + magic + metadata+payload
+    var buffer = ByteBufferAllocator().buffer(capacity: Int(totalSize) + 4)
 
-    buffer.append(contentsOf: withUnsafeBytes(of: totalSize.bigEndian) { Array($0) })
-    buffer.append(contentsOf: withUnsafeBytes(of: commandSize.bigEndian) { Array($0) })
-    buffer.append(commandData)
-    buffer.append(contentsOf: [0x0e, 0x01])  // Magic number
-    buffer.append(contentsOf: withUnsafeBytes(of: checksum.bigEndian) { Array($0) })
-    buffer.append(metadataPayloadSection)
+    buffer.writeInteger(totalSize, endianness: .big)
+    buffer.writeInteger(commandSize, endianness: .big)
+    buffer.writeBytes(commandData)  
+    buffer.writeBytes([0x0e, 0x01])  // Magic number
+    buffer.writeInteger(checksum, endianness: .big)
+    var metadataPayloadCopy = metadataPayloadSection
+    buffer.writeBuffer(&metadataPayloadCopy)
 
     return buffer
   }
 
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
-  private func calculateCRC32C(data: Data) -> UInt32 {
-    return CyclicRedundancyCheck.crc32c(bytes: data)
+  private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
+    return CyclicRedundancyCheck.crc32c(bytes: buffer.readableBytesView)
   }
 }
 
@@ -149,75 +154,99 @@ public struct PulsarFrameDecoder {
   public init() {}
 
   /// Decode a frame from bytes (matches C# DotPulsar protocol specification)
-  public func decode(from data: Data) throws -> PulsarFrame? {
-    guard data.count >= 8 else { return nil }  // Need at least total size + command size
+  public func decode(from buffer: inout ByteBuffer) throws -> PulsarFrame? {
+    guard buffer.readableBytes >= 8 else { return nil }  // Need at least total size + command size
+
+    // Save the reader index in case we need to reset
+    let originalReaderIndex = buffer.readerIndex
 
     // Read total size
-    let totalSize = data.subdata(in: 0..<4).withUnsafeBytes { bytes in
-      UInt32(bigEndian: bytes.load(as: UInt32.self))
+    guard let totalSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
+      buffer.moveReaderIndex(to: originalReaderIndex)
+      return nil
     }
 
-    guard data.count >= totalSize + 4 else { return nil }  // Not enough data for complete frame
+    guard buffer.readableBytes >= Int(totalSize) else {
+      buffer.moveReaderIndex(to: originalReaderIndex)
+      return nil  // Not enough data for complete frame
+    }
 
     // Read command size
-    let commandSize = data.subdata(in: 4..<8).withUnsafeBytes { bytes in
-      UInt32(bigEndian: bytes.load(as: UInt32.self))
+    guard let commandSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
+      buffer.moveReaderIndex(to: originalReaderIndex)
+      return nil
     }
 
     // Read command
-    let commandData = data.subdata(in: 8..<(8 + Int(commandSize)))
+    guard let commandBytes = buffer.readBytes(length: Int(commandSize)) else {
+      buffer.moveReaderIndex(to: originalReaderIndex)
+      return nil
+    }
+    let commandData = Data(commandBytes)
     let command = try Pulsar_Proto_BaseCommand(serializedBytes: commandData)
 
-    var offset = 8 + Int(commandSize)
     var metadata: Pulsar_Proto_MessageMetadata?
-    var payload: Data?
+    var payload: ByteBuffer?
 
     // Check if this is a simple frame (command only) or complex frame (with metadata/payload)
-    let remainingSize = Int(totalSize) + 4 - offset
+    let remainingSize = Int(totalSize) - 4 - Int(commandSize)
 
-    if remainingSize > 6 {  // Need at least checksum(4) + magic(2)
-      // Complex frame: checksum + magic + metadata + payload
+    if remainingSize > 6 {  // Need at least magic(2) + checksum(4)
+      // Complex frame: magic + checksum + metadata + payload
 
       // Read magic number (2 bytes)
-      guard offset + 2 <= data.count else { return nil }
-      let magic = data.subdata(in: offset..<(offset + 2))
-      guard magic == Data([0x0e, 0x01]) else {
+      guard let magicBytes = buffer.readBytes(length: 2) else {
+        buffer.moveReaderIndex(to: originalReaderIndex)
+        return nil
+      }
+      guard magicBytes == [0x0e, 0x01] else {
         throw PulsarClientError.protocolError("Invalid magic number in frame")
       }
-      offset += 2
 
       // Read checksum (4 bytes)
-      guard offset + 4 <= data.count else { return nil }
-      let checksum = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { bytes in
-        UInt32(bigEndian: bytes.load(as: UInt32.self))
+      guard let checksum = buffer.readInteger(endianness: .big, as: UInt32.self) else {
+        buffer.moveReaderIndex(to: originalReaderIndex)
+        return nil
       }
-      offset += 4
 
+      // Get the remaining bytes for checksum verification
+      let checksumDataLength = remainingSize - 6  // minus magic(2) + checksum(4)
+      
+      // Peek at the data for checksum calculation without moving reader index
+      guard let checksumData = buffer.getBytes(at: buffer.readerIndex, length: checksumDataLength) else {
+        buffer.moveReaderIndex(to: originalReaderIndex)
+        return nil
+      }
+      
+      // Create a buffer for checksum calculation
+      var checksumBuffer = ByteBufferAllocator().buffer(capacity: checksumDataLength)
+      checksumBuffer.writeBytes(checksumData)
+      
+      // Calculate and verify checksum
+      let calculatedChecksum = calculateCRC32C(buffer: checksumBuffer)
+      guard calculatedChecksum == checksum else {
+        throw PulsarClientError.protocolError("Frame checksum mismatch")
+      }
+
+      // Now read the actual data
       // Read metadata size and metadata
-      guard offset + 4 <= data.count else { return nil }
-      let metadataSize = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { bytes in
-        UInt32(bigEndian: bytes.load(as: UInt32.self))
+      guard let metadataSize = buffer.readInteger(endianness: .big, as: UInt32.self) else {
+        buffer.moveReaderIndex(to: originalReaderIndex)
+        return nil
       }
-      offset += 4
 
-      if metadataSize > 0 && offset + Int(metadataSize) <= data.count {
-        // Read metadata
-        let metadataData = data.subdata(in: offset..<(offset + Int(metadataSize)))
-        metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: metadataData)
-        offset += Int(metadataSize)
+      if metadataSize > 0 {
+        // Read metadata using ByteBuffer directly
+        guard let metadataSlice = buffer.readSlice(length: Int(metadataSize)) else {
+          buffer.moveReaderIndex(to: originalReaderIndex)
+          return nil
+        }
+        metadata = try Pulsar_Proto_MessageMetadata(serializedBytes: metadataSlice)
 
         // Read payload if present
-        let payloadSize = Int(totalSize) + 4 - offset
+        let payloadSize = remainingSize - 6 - 4 - Int(metadataSize)  // minus magic, checksum, metadata size, metadata
         if payloadSize > 0 {
-          payload = data.subdata(in: offset..<(offset + payloadSize))
-        }
-
-        // Verify checksum
-        let metadataPayloadSection = data.subdata(
-          in: (8 + Int(commandSize) + 6)..<(Int(totalSize) + 4))
-        let calculatedChecksum = calculateCRC32C(data: metadataPayloadSection)
-        guard calculatedChecksum == checksum else {
-          throw PulsarClientError.protocolError("Frame checksum mismatch")
+          payload = buffer.readSlice(length: payloadSize)
         }
       }
     }
@@ -226,8 +255,8 @@ public struct PulsarFrameDecoder {
   }
 
   /// Calculate CRC32C checksum (using Castagnoli polynomial)
-  private func calculateCRC32C(data: Data) -> UInt32 {
-    return CyclicRedundancyCheck.crc32c(bytes: data)
+  private func calculateCRC32C(buffer: ByteBuffer) -> UInt32 {
+    return CyclicRedundancyCheck.crc32c(bytes: buffer.readableBytesView)
   }
 }
 
@@ -265,7 +294,7 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
   public func connect(
     clientVersion: String = "PulsarClient-Swift/1.0.0",
     authMethodName: String? = nil,
-    authData: Data? = nil
+    authData: ByteBuffer? = nil
   ) -> Pulsar_Proto_BaseCommand {
     var command = Pulsar_Proto_BaseCommand()
     command.type = .connect
@@ -279,7 +308,9 @@ public final class PulsarCommandBuilder: @unchecked Sendable {
     }
 
     if let authData = authData {
-      connect.authData = authData
+      var authDataCopy = authData
+      let authBytes = authDataCopy.readBytes(length: authDataCopy.readableBytes) ?? []
+      connect.authData = Data(authBytes)
     }
 
     command.connect = connect

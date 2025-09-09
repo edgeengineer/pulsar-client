@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import NIOCore
 
 /// Channel state
 enum ChannelState: Sendable {
@@ -74,8 +75,8 @@ actor ProducerChannel: PulsarChannel {
       // Complete the operation
       wrapper.complete(with: messageId)
     } else {
-      logger.warning(
-        "Received send receipt for unknown sequence ID \(receipt.sequenceID), pending: \(pendingSends.keys.sorted())"
+      logger.debug(
+        "Received send receipt for unknown sequence ID", metadata: ["sequenceId": "\(receipt.sequenceID)", "pendingSequences": "\(pendingSends.keys.sorted())"]
       )
     }
   }
@@ -97,6 +98,25 @@ actor ProducerChannel: PulsarChannel {
   func setSchemaInfo(_ schemaInfo: SchemaInfo?) {
     self.schemaInfo = schemaInfo
   }
+  
+  /// Handle connection failure
+  func handleConnectionFailure(_ error: Error) async {
+    logger.error("Producer handling connection failure", metadata: [
+      "producerId": "\(id)",
+      "topic": "\(topic)",
+      "error": "\(error)"
+    ])
+    
+    // Fail all pending sends
+    for (sequenceId, wrapper) in pendingSends {
+      logger.debug("Failing pending send", metadata: ["sequenceId": "\(sequenceId)"])
+      wrapper.fail(with: error)
+    }
+    pendingSends.removeAll()
+    
+    // Update state
+    state = .inactive
+  }
 
   /// Get schema info
   func getSchemaInfo() -> SchemaInfo? {
@@ -112,15 +132,16 @@ actor ConsumerChannel: PulsarChannel {
   let consumerName: String?
   private(set) var state: ChannelState = .inactive
   internal weak var connection: Connection?
+  private let logger = Logger(label: "ConsumerChannel")
 
   // Message delivery callback
   internal var messageHandler:
-    ((Pulsar_Proto_CommandMessage, Data, Pulsar_Proto_MessageMetadata) async -> Void)?
+    ((Pulsar_Proto_CommandMessage, ByteBuffer, Pulsar_Proto_MessageMetadata) async -> Void)?
 
   // Per-consumer inbound FIFO dispatcher state
   private typealias InboundMessage = (
     msg: Pulsar_Proto_CommandMessage,
-    payload: Data,
+    payload: ByteBuffer,
     metadata: Pulsar_Proto_MessageMetadata
   )
   private var inboundBuffer: [InboundMessage] = []
@@ -160,7 +181,7 @@ actor ConsumerChannel: PulsarChannel {
 
   /// Set the message handler callback
   func setMessageHandler(
-    _ handler: @escaping (Pulsar_Proto_CommandMessage, Data, Pulsar_Proto_MessageMetadata) async ->
+    _ handler: @escaping (Pulsar_Proto_CommandMessage, ByteBuffer, Pulsar_Proto_MessageMetadata) async ->
       Void
   ) {
     self.messageHandler = handler
@@ -183,6 +204,38 @@ actor ConsumerChannel: PulsarChannel {
 
     state = .closed
   }
+  
+  /// Handle connection failure
+  func handleConnectionFailure(_ error: Error) async {
+    logger.error("Consumer handling connection failure", metadata: [
+      "consumerId": "\(id)",
+      "topic": "\(topic)",
+      "subscription": "\(subscription)",
+      "error": "\(error)"
+    ])
+    
+    // Clear message handler
+    messageHandler = nil
+    
+    // Close the inbound stream
+    inboundClosed = true
+    
+    // Resume all waiters with nil to signal closure
+    for waiter in inboundWaiters {
+      waiter.resume(returning: nil)
+    }
+    inboundWaiters.removeAll()
+    
+    // Clear buffer
+    inboundBuffer.removeAll()
+    
+    // Cancel dispatcher
+    dispatchTask?.cancel()
+    dispatchTask = nil
+    
+    // Update state
+    state = .inactive
+  }
 
   /// Set subscription configuration
   func setSubscriptionConfig(type: SubscriptionType, initialPosition: SubscriptionInitialPosition) {
@@ -204,7 +257,7 @@ actor ConsumerChannel: PulsarChannel {
 
   func enqueueInbound(
     message: Pulsar_Proto_CommandMessage,
-    payload: Data,
+    payload: ByteBuffer,
     metadata: Pulsar_Proto_MessageMetadata
   ) async {
     guard state == .active else { return }
@@ -274,13 +327,13 @@ actor ChannelManager {
   /// Register a producer channel
   func registerProducer(_ channel: ProducerChannel) {
     producers[channel.id] = channel
-    logger.debug("Registered producer \(channel.id) for topic \(channel.topic)")
+    logger.debug("Registered producer", metadata: ["producerId": "\(channel.id)", "topic": "\(channel.topic)"])
   }
 
   /// Register a consumer channel
   func registerConsumer(_ channel: ConsumerChannel) {
     consumers[channel.id] = channel
-    logger.debug("Registered consumer \(channel.id) for topic \(channel.topic)")
+    logger.debug("Registered consumer", metadata: ["consumerId": "\(channel.id)", "topic": "\(channel.topic)"])
   }
 
   /// Get producer by ID
@@ -296,14 +349,14 @@ actor ChannelManager {
   /// Remove producer
   func removeProducer(id: UInt64) {
     if let producer = producers.removeValue(forKey: id) {
-      logger.debug("Removed producer \(id) for topic \(producer.topic)")
+      logger.debug("Removed producer", metadata: ["producerId": "\(id)", "topic": "\(producer.topic)"])
     }
   }
 
   /// Remove consumer
   func removeConsumer(id: UInt64) {
     if let consumer = consumers.removeValue(forKey: id) {
-      logger.debug("Removed consumer \(id) for topic \(consumer.topic)")
+      logger.debug("Removed consumer", metadata: ["consumerId": "\(id)", "topic": "\(consumer.topic)"])
     }
   }
 
@@ -328,5 +381,30 @@ actor ChannelManager {
       }
     }
     consumers.removeAll()
+  }
+  
+  /// Handle connection failure by notifying all channels
+  func handleConnectionFailure(error: Error) async {
+    logger.error("Handling connection failure for all channels", metadata: ["error": "\(error)"])
+    
+    // Notify all producers
+    await withTaskGroup(of: Void.self) { group in
+      for (id, producer) in producers {
+        group.addTask {
+          self.logger.debug("Notifying producer of connection failure", metadata: ["producerId": "\(id)"])
+          await producer.handleConnectionFailure(error)
+        }
+      }
+    }
+    
+    // Notify all consumers
+    await withTaskGroup(of: Void.self) { group in
+      for (id, consumer) in consumers {
+        group.addTask {
+          self.logger.debug("Notifying consumer of connection failure", metadata: ["consumerId": "\(id)"])
+          await consumer.handleConnectionFailure(error)
+        }
+      }
+    }
   }
 }

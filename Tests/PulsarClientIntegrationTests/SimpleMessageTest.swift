@@ -43,12 +43,20 @@ class SimpleMessageTest {
     let messageId = try await producer.send("Hello World")
     print("Message sent with ID: \(messageId)")
 
-    // Try to receive with a reasonable timeout
+    // Try to receive the message
     print("=== Waiting for message ===")
     do {
-      let message = try await consumer.receive(timeout: 15.0)
-      print("SUCCESS: Received message: '\(message.value)'")
-      try await consumer.acknowledge(message)
+      var iterator = consumer.makeAsyncIterator()
+      if let messageOpt = try await iterator.next() {
+        guard let message = messageOpt as? Message<String> else {
+          throw PulsarClientError.unknownError("Failed to cast message")
+        }
+        print("SUCCESS: Received message: '\(message.value)'")
+        try await consumer.acknowledge(message)
+      } else {
+        print("FAILED: No message received")
+        throw PulsarClientError.consumerClosed
+      }
     } catch {
       print("FAILED to receive message: \(error)")
       throw error

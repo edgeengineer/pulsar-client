@@ -32,6 +32,9 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
   private let retryExecutor: RetryExecutor
   private let stateManager: ProducerStateManager
   private let exceptionHandler: ExceptionHandler
+  
+  // Interceptors
+  private let interceptors: ProducerInterceptors<T>?
 
   public let topic: String
   public nonisolated var state: ClientState {
@@ -76,6 +79,13 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     )
     self.exceptionHandler = DefaultExceptionHandler(logger: logger)
 
+    // Initialize interceptors if configured
+    if !configuration.interceptors.isEmpty {
+      self.interceptors = ProducerInterceptors(interceptors: configuration.interceptors)
+    } else {
+      self.interceptors = nil
+    }
+    
     // Initialize batch builder if batching is enabled
     if configuration.batchingEnabled {
       self.batchBuilder = MessageBatchBuilder(
@@ -209,31 +219,62 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     try await send(message, metadata: MessageMetadata())
   }
 
-  public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
-    guard _state == .connected else {
-      throw PulsarClientError.producerBusy("Producer not connected")
-    }
+   public func send(_ message: T, metadata: MessageMetadata) async throws -> MessageId {
+      guard _state == .connected else {
+        throw PulsarClientError.producerBusy("Producer not connected")
+      }
+     
+     // Create a Message object for interceptors
+      var msg = Message(
+            id: MessageId(ledgerId: 0, entryId: 0),  // Will be set after send
+            value: message,
+            metadata: metadata,
+            publishTime: Date(),
+            producerName: producerName,
+            replicatedFrom: nil,
+            topicName: topic,
+            redeliveryCount: 0,
+            data: nil
+        )
+        
+        // Process through interceptors if configured
+      if let interceptors = interceptors {
+          msg = try await interceptors.beforeSend(producer: self, message: msg)
+      }
+     
+      // Store the message for interceptor notification
+      let interceptorMessage = msg
 
-    // Assign sequence ID synchronously to ensure ordering
-    var metadata = metadata
-    if metadata.sequenceId == nil {
-      metadata.sequenceId = nextSequenceId()
-    }
+      // Use the potentially modified metadata from the interceptor
+      var metadata = msg.metadata
+      if metadata.sequenceId == nil {
+        metadata.sequenceId = nextSequenceId()
+      }
+      
+      guard let sequenceId = metadata.sequenceId else {
+        throw PulsarClientError.invalidConfiguration("Failed to generate sequence ID")
+      }
 
-    // Encode message synchronously to ensure no race conditions
-    let payload = try schema.encode(message)
+      // Encode message synchronously to ensure no race conditions
+      let payloadData = try schema.encode(message)
+      var payload = ByteBufferAllocator().buffer(capacity: payloadData.count)
+      payload.writeBytes(payloadData)
 
-    // Create metadata synchronously
-    let protoMetadata = await connection.commandBuilder.createMessageMetadata(
-      producerName: producerName,
-      sequenceId: metadata.sequenceId!,
-      publishTime: Date(),
-      properties: metadata.properties,
-      compressionType: configuration.compressionType
-    )
+      // Create metadata synchronously
+      let protoMetadata = await connection.commandBuilder.createMessageMetadata(
+        producerName: producerName,
+        sequenceId: sequenceId,
+        publishTime: Date(),
+        properties: metadata.properties,
+        compressionType: configuration.compressionType
+      )
 
-    // Use the serial dispatch queue to ensure FIFO ordering
-    return try await enqueueAndWait(metadata: protoMetadata, payload: payload)
+      // Use the serial dispatch queue to ensure FIFO ordering
+      return try await enqueueAndWait(
+        metadata: protoMetadata, 
+        payload: payload,
+        interceptorMessage: interceptorMessage
+      )
   }
 
   public func sendBatch(_ messages: [T]) async throws -> [MessageId] {
@@ -295,20 +336,25 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     updateState(.closed)
-    logger.info("Producer closed", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Producer closed", metadata: ["producerName": "\(producerName)"])
   }
 
   // MARK: - Private Methods
 
   /// Enqueue operation and wait for completion with FIFO ordering
-  private func enqueueAndWait(metadata: Pulsar_Proto_MessageMetadata, payload: Data) async throws
-    -> MessageId
-  {
+  private func enqueueAndWait(
+    metadata: Pulsar_Proto_MessageMetadata, 
+    payload: ByteBuffer,
+    interceptorMessage: Message<T>? = nil
+  ) async throws -> MessageId {
     return try await withCheckedThrowingContinuation { continuation in
       let sendOp = SendOperation<T>(
         metadata: metadata,
         payload: payload,
-        continuation: continuation
+        continuation: continuation,
+        interceptorMessage: interceptorMessage,
+        interceptors: interceptors,
+        producer: self
       )
 
       // Use serial dispatch queue to maintain FIFO ordering
@@ -351,7 +397,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Message dispatcher that processes the send queue (like C# MessageDispatcher)
   private func runMessageDispatcher() async {
-    logger.info("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Starting message dispatcher", metadata: ["producerName": "\(producerName)"])
 
     while !Task.isCancelled && _state == .connected {
       do {
@@ -375,7 +421,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       }
     }
 
-    logger.info("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
+    logger.debug("Message dispatcher stopped", metadata: ["producerName": "\(producerName)"])
   }
 
   /// Process a single send operation (like C# channel.Send)
@@ -418,7 +464,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       await channel.registerSendOperation(sendOp)
 
       // Send the frame
-      logger.info("Sending frame for sequence \(sendOp.sequenceId)")
+      logger.trace("Sending frame for sequence", metadata: ["sequenceId": "\(sendOp.sequenceId)"])
       try await connection.sendCommand(frame)
 
       // The receipt will be handled by the channel when it arrives
@@ -441,7 +487,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
         }
       } catch {
         if !Task.isCancelled {
-      logger.warning("Batch sender error", metadata: ["error": "\(error)"])
+      logger.debug("Batch sender error", metadata: ["error": "\(error)"])
         }
       }
     }
@@ -457,7 +503,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     }
 
     // Create batched payload
-    var batchedPayload = Data()
+    var batchedPayload = ByteBufferAllocator().buffer(capacity: 1024)
     var singleMessageMetadatas: [Pulsar_Proto_SingleMessageMetadata] = []
 
     for message in batch.messages {
@@ -495,20 +541,23 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       let metadataData = try singleMeta.serializedData()
 
       // Write metadata size (4 bytes)
-      var metadataSize = UInt32(metadataData.count).bigEndian
-      batchedPayload.append(Data(bytes: &metadataSize, count: 4))
+      batchedPayload.writeInteger(UInt32(metadataData.count), endianness: .big)
 
       // Write metadata
-      batchedPayload.append(metadataData)
+      batchedPayload.writeBytes(metadataData)
 
       // Write payload
-      batchedPayload.append(messagePayload)
+      batchedPayload.writeBytes(messagePayload)
     }
 
     // Create batch metadata
+    guard let firstSequenceId = batch.messages.first?.sequenceId else {
+      throw PulsarClientError.invalidConfiguration("Batch has no messages")
+    }
+    
     var metadata = await connection.commandBuilder.createMessageMetadata(
       producerName: producerName,
-      sequenceId: batch.messages.first!.sequenceId,
+      sequenceId: firstSequenceId,
       publishTime: Date(),
       properties: [:],  // Batch level properties
       compressionType: configuration.compressionType
@@ -516,10 +565,12 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
     // Set batch information
     metadata.numMessagesInBatch = Int32(batch.messages.count)
-    metadata.uncompressedSize = UInt32(batchedPayload.count)
+    metadata.uncompressedSize = UInt32(batchedPayload.readableBytes)
 
     // Create send command with the highest sequence ID
-    let highestSequenceId = batch.messages.last!.sequenceId
+    guard let highestSequenceId = batch.messages.last?.sequenceId else {
+      throw PulsarClientError.invalidConfiguration("Batch has no messages")
+    }
     let sendCommand = await connection.commandBuilder.send(
       producerId: id,
       sequenceId: highestSequenceId,
@@ -527,14 +578,14 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
     )
 
     // Apply compression if needed
-    let finalPayload: Data
+    let finalPayload: ByteBuffer
     if configuration.compressionType != .none {
       // Compress the payload
       do {
-        finalPayload = try compressData(batchedPayload, type: configuration.compressionType)
+        finalPayload = try compressPayload(batchedPayload, type: configuration.compressionType)
         metadata.compression = configuration.compressionType.toProto()
       } catch {
-        logger.warning("Failed to compress batch, sending uncompressed: \(error)")
+        logger.debug("Failed to compress batch, sending uncompressed", metadata: ["error": "\(error)"])
         finalPayload = batchedPayload
       }
     } else {
@@ -585,7 +636,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
   /// Handle producer error with fault tolerance
   func handleError(_ error: Error) async {
-    logger.warning("Producer \(producerName) error: \(error)")
+    logger.debug("Producer error", metadata: ["producerName": "\(producerName)", "error": "\(error)"])
 
     var exceptionContext = ExceptionContext(
       exception: error,
@@ -606,7 +657,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
 
     case .rethrow:
       // Keep current state, might recover later
-      logger.warning(
+      logger.debug(
         "Producer keeping current state after error",
         metadata: ["producerName": "\(producerName)", "error": "\(error)"]
       )
@@ -627,7 +678,7 @@ actor ProducerImpl<T>: ProducerProtocol where T: Sendable {
       // Re-establish producer if needed
       // The channel manager should handle producer re-creation
       updateState(.connected)
-      logger.info("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
+      logger.debug("Producer recovered successfully", metadata: ["producerName": "\(producerName)"])
 
     } catch {
       logger.error(
@@ -753,8 +804,8 @@ private actor MessageBatchBuilder<T: Sendable> {
 
     // Metadata overhead
     size += 50  // Base metadata size
-    if message.metadata.key != nil {
-      size += message.metadata.key!.utf8.count + 5
+    if let key = message.metadata.key {
+      size += key.utf8.count + 5
     }
 
     return size
@@ -834,10 +885,10 @@ extension ProducerImpl {
 
 // MARK: - Compression
 
-private func compressData(_ data: Data, type: CompressionType) throws -> Data {
+private func compressPayload(_ payload: ByteBuffer, type: CompressionType) throws -> ByteBuffer {
   switch type {
   case .none:
-    return data
+    return payload
   case .lz4:
     // LZ4 compression would require external library
     throw PulsarClientError.notImplemented

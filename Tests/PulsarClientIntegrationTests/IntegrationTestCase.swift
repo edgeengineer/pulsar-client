@@ -58,6 +58,10 @@ actor IntegrationTestCase {
 
   func createTopic() async throws -> String {
     let topicName = "persistent://public/default/test-\(UUID().uuidString)"
+    return try await createTopicWithName(topicName)
+  }
+  
+  func createTopicWithName(_ topicName: String) async throws -> String {
     createdTopics.append(topicName)
 
     // Create topic via admin API

@@ -4,6 +4,7 @@ import NIO
 import NIOCore
 import NIOPosix
 import NIOSSL
+import AsyncAlgorithms
 
 /// Connection state
 public enum ConnectionState: Equatable, Sendable {
@@ -37,7 +38,7 @@ protocol PulsarConnection: Actor {
   var state: ConnectionState { get }
   var stateChanges: AsyncStream<ConnectionState> { get }
 
-  func connect() async throws
+  func run() async throws
   func send(frame: PulsarFrame) async throws
   func close() async
 }
@@ -59,12 +60,12 @@ actor Connection: PulsarConnection {
 
   internal var pendingRequests:
     [UInt64: AsyncThrowingStream<Pulsar_Proto_BaseCommand, Error>.Continuation] = [:]
-  private var frameHandler: PulsarFrameHandler?
-  internal var channelManager: ChannelManager?
-  private var backgroundProcessingTask: Task<Void, Never>?
+  internal var channelManager: ChannelManager
   internal var healthMonitoringTask: Task<Void, Never>?
-  private var frameProcessingStarted = false
-  private var authRefreshTask: Task<Void, Never>?
+  
+  // Channel for outbound commands that need to be sent
+  private let outboundCommands = AsyncChannel<PulsarFrame>()
+  private var lastAuthRefresh = Date()
 
   // Statistics tracking
   internal var connectedAt: Date?
@@ -94,22 +95,28 @@ actor Connection: PulsarConnection {
 
   /// Get the channel manager
   func getChannelManager() -> ChannelManager {
-    return channelManager!
+    return channelManager
   }
 
   deinit {
-    // Cancel any running tasks
-    backgroundProcessingTask?.cancel()
+    // Cancel any running tasks immediately
     healthMonitoringTask?.cancel()
     stateContinuation.finish()
+    outboundCommands.finish()
+    
+    // Clear any remaining pending requests
+    for (_, continuation) in pendingRequests {
+      continuation.finish(throwing: PulsarClientError.connectionFailed("Connection deallocated"))
+    }
+    pendingRequests.removeAll()
   }
 
-  func connect() async throws {
+  func run() async throws {
     guard _state == .disconnected || _state == .closed else {
       throw PulsarClientError.connectionFailed("Already connected or connecting")
     }
 
-    logger.info("Starting connection to \(url.host):\(url.port)")
+    logger.debug("Starting connection", metadata: ["host": "\(url.host)", "port": "\(url.port)"])
 
     // Validate encryption policy
     if encryptionPolicy.isEncryptionRequired && !url.isSSL {
@@ -123,101 +130,69 @@ actor Connection: PulsarConnection {
     }
 
     updateState(.connecting)
-    logger.info("State updated to connecting")
+    logger.debug("State updated to connecting")
 
     do {
-      let frameHandler = PulsarFrameHandler(connection: self)
-      self.frameHandler = frameHandler
-
-      // Set up synchronous CONNECTED handler
-      let connectedSignal = AsyncStream<Void>.makeStream()
-      frameHandler.setConnectedHandler { [weak self] frame in
-        guard let self = self else { return }
-        Task {
-          self.logger.debug(
-            "CONNECTED handler called - Server version: \(frame.command.connected.serverVersion)")
-          await self.updateState(.connected)
-          await self.setConnectedAt(Date())
-        }
-        connectedSignal.continuation.yield(())
-        connectedSignal.continuation.finish()
+      // Prepare CONNECT command with authentication if provided
+      let connectCommand: Pulsar_Proto_BaseCommand
+      if let auth = authentication {
+        logger.debug("Using authentication")
+        let authData = try await auth.getAuthenticationData()
+        var authBuffer = ByteBufferAllocator().buffer(capacity: authData.count)
+        authBuffer.writeBytes(authData)
+        connectCommand = commandBuilder.connect(
+          authMethodName: auth.authenticationMethodName,
+          authData: authBuffer
+        )
+      } else {
+        logger.debug("No authentication required")
+        connectCommand = commandBuilder.connect()
       }
+      
+      logger.debug("Protocol version", metadata: ["version": "\(connectCommand.connect.protocolVersion)"])
+      logger.debug("Client version", metadata: ["version": "\(connectCommand.connect.clientVersion)"])
 
+      logger.debug("Establishing TCP connection")
+      
+      // Create channel with traditional bootstrap
       let bootstrap = ClientBootstrap(group: eventLoopGroup)
         .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
         .channelOption(ChannelOptions.tcpOption(.tcp_nodelay), value: 1)
         .channelInitializer { channel in
-          self.setupChannelPipeline(channel: channel, frameHandler: frameHandler)
+          self.setupChannelPipeline(channel: channel, connectCommand: connectCommand)
         }
-
-      logger.info("Establishing TCP connection")
+      
       let channel = try await bootstrap.connect(host: url.host, port: url.port).get()
       self.channel = channel
-      logger.info("TCP connection established")
-
-      // Start background processing BEFORE sending CONNECT command (like C#)
-      startBackgroundProcessing()
-
-      // Wait for frame processing to actually start
-      await waitForFrameProcessing()
-
-      // Send CONNECT command with authentication if provided
-      let connectCommand: Pulsar_Proto_BaseCommand
-      if let auth = authentication {
-        logger.info("Using authentication")
-        let authData = try await auth.getAuthenticationData()
-        connectCommand = commandBuilder.connect(
-          authMethodName: auth.authenticationMethodName,
-          authData: authData
+      
+      // Wrap channel with NIOAsyncChannel on the event loop
+      let asyncChannel = try await channel.eventLoop.submit {
+        try NIOAsyncChannel<PulsarFrame, PulsarFrame>(
+          wrappingChannelSynchronously: channel,
+          configuration: NIOAsyncChannel.Configuration(
+            backPressureStrategy: .init(lowWatermark: 2, highWatermark: 100),
+            isOutboundHalfClosureEnabled: false,
+            inboundType: PulsarFrame.self,
+            outboundType: PulsarFrame.self
+          )
         )
-      } else {
-        logger.info("No authentication required")
-        connectCommand = commandBuilder.connect()
-      }
-      let frame = PulsarFrame(command: connectCommand)
+      }.get()
+      
+      logger.debug("TCP connection established")
 
-      // Debug: Log frame details
-      logger.info(
-        "CONNECT command details: type=\(connectCommand.type), hasConnect=\(connectCommand.hasConnect)"
-      )
-      logger.info("Protocol version: \(connectCommand.connect.protocolVersion)")
-      logger.info("Client version: \(connectCommand.connect.clientVersion)")
-
-      logger.info("Sending CONNECT command")
-      try await sendFrame(frame)
-
-      // Wait for CONNECTED response (handled synchronously)
-      logger.info("Waiting for CONNECTED response")
-      do {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-          group.addTask {
-            for await _ in connectedSignal.stream {
-              // CONNECTED received
-              return
-            }
-            throw PulsarClientError.connectionFailed("CONNECTED stream ended unexpectedly")
-          }
-
-          group.addTask {
-            try await Task.sleep(nanoseconds: 10_000_000_000)  // 10 seconds
-            throw PulsarClientError.timeout("CONNECTED response timeout")
-          }
-
-          try await group.next()!
-          group.cancelAll()
-        }
-        logger.info("CONNECTED response received successfully")
-        logger.info("Successfully connected to Pulsar at \(url.host):\(url.port)")
-
-        // Start authentication refresh task if needed
-        startAuthenticationRefreshTask()
-      } catch {
-        logger.error("Connection failed: \(error)")
-        throw error
-      }
+      // The ConnectedFrameHandler will handle the handshake internally:
+      // 1. It sends the CONNECT command when channel becomes active
+      // 2. It waits for the CONNECTED response
+      // 3. Only after receiving CONNECTED does it propagate channelActive
+      // 4. This ensures no frames are processed until handshake completes
+      
+      // Process the connection lifecycle in a structured manner
+      try await processConnection(asyncChannel)
+      
+      logger.debug("Connection processing completed")
 
     } catch {
-      logger.error("Connection failed: \(error)")
+      logger.error("Connection failed", metadata: ["error": "\(error)"])
       updateState(.faulted(error))
       throw PulsarClientError.connectionFailed("Failed to connect: \(error)")
     }
@@ -227,55 +202,52 @@ actor Connection: PulsarConnection {
     guard _state == .connected else {
       throw PulsarClientError.connectionFailed("Not connected")
     }
-
-    try await sendFrame(frame)
+    // Send frame through the async channel
+    await outboundCommands.send(frame)
   }
 
+  func isConnected() async -> Bool {
+     return _state == .connected
+  }
+  
   func close() async {
     guard _state != .closing && _state != .closed else {
       logger.debug("Connection already closing or closed")
       return
     }
 
-    logger.info("Starting connection close process")
+    logger.debug("Starting connection close process")
     updateState(.closing)
 
-    // Cancel all pending requests
-    for (_, continuation) in pendingRequests {
-      continuation.finish(throwing: PulsarClientError.connectionFailed("Connection closing"))
-    }
-    pendingRequests.removeAll()
+    // Fail all pending requests
+    await failAllPendingRequests(error: PulsarClientError.connectionFailed("Connection closing"))
 
     // Close channels registered to this connection
-    await channelManager?.closeAll()
+    await channelManager.closeAll()
 
-    // Finish the frame stream to stop frame processing
-    frameHandler?.frameStreamContinuation.finish()
-
-    // Close the channel and wait for it to complete
+    // Finish outbound commands channel
+    outboundCommands.finish()
+    
+    // Close the underlying channel
     if let channel = channel {
       logger.debug("Closing NIO channel")
       do {
         try await channel.close()
         logger.debug("NIO channel closed successfully")
       } catch {
-        logger.warning("Error closing NIO channel: \(error)")
+        logger.debug("Error closing NIO channel", metadata: ["error": "\(error)"])
       }
     }
-    channel = nil
+    
+    self.channel = nil
 
     // Close any background tasks
-    backgroundProcessingTask?.cancel()
-    backgroundProcessingTask = nil
-
-    authRefreshTask?.cancel()
-    authRefreshTask = nil
 
     healthMonitoringTask?.cancel()
     healthMonitoringTask = nil
 
     updateState(.closed)
-    logger.info("Connection closed")
+    logger.debug("Connection closed")
   }
 
   // MARK: - Internal Methods
@@ -284,83 +256,106 @@ actor Connection: PulsarConnection {
     _state = newState
     stateContinuation.yield(newState)
   }
+  
+  /// Handle connection error by updating state and failing all pending operations
+  private func handleConnectionError(_ error: Error) async {
+    logger.error("Connection error occurred", metadata: ["error": "\(error)"])
+    updateState(.faulted(error))
+    
+    // Fail all pending requests
+    await failAllPendingRequests(error: error)
+    
+    // Notify channel manager of connection failure
+    await channelManager.handleConnectionFailure(error: error)
+    
+    // Close the connection
+    await close()
+  }
+  
+  /// Fail all pending requests with the given error
+  private func failAllPendingRequests(error: Error) async {
+    for (requestId, continuation) in pendingRequests {
+      logger.debug("Failing pending request", metadata: ["requestId": "\(requestId)"])
+      continuation.finish(throwing: error)
+    }
+    pendingRequests.removeAll()
+  }
 
   private nonisolated func setupChannelPipeline(
-    channel: NIOCore.Channel, frameHandler: PulsarFrameHandler
+    channel: NIOCore.Channel, connectCommand: Pulsar_Proto_BaseCommand
   ) -> EventLoopFuture<Void> {
-
-    var handlers: [ChannelHandler] = []
-
-    // Add SSL handler if needed
-    if url.isSSL {
-      do {
-        let sslContext = try NIOSSLContext(configuration: .makeClientConfiguration())
-        let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: url.host)
-        handlers.append(sslHandler)
-      } catch {
-        return channel.eventLoop.makeFailedFuture(error)
-      }
-    }
-
-    // Add a raw data logger first
-    handlers.append(RawDataLogger())
-
-    // Add frame codec handlers
-    handlers.append(ByteToMessageHandler(PulsarFrameByteDecoder()))
-    handlers.append(MessageToByteHandler(PulsarFrameByteEncoder()))
-    handlers.append(frameHandler)
-
-    return channel.pipeline.addHandlers(handlers)
+    // Use the centralized pipeline builder
+    let configuration = ChannelPipelineBuilder.Configuration(
+      url: url,
+      includeRawDataLogger: true,  // Include for debugging
+      connectCommand: connectCommand,
+      logger: logger
+    )
+    
+    return ChannelPipelineBuilder.setupCompletePipeline(
+      on: channel,
+      configuration: configuration
+    )
   }
 
   internal func sendFrame(_ frame: PulsarFrame) async throws {
-    guard let channel = channel else {
-      throw PulsarClientError.connectionFailed("No channel available")
-    }
-
-    // Debug: Log the frame being sent
-    let encoder = PulsarFrameEncoder()
-    if let data = try? encoder.encode(frame: frame) {
-      let hexString = data.prefix(100).map { String(format: "%02x", $0) }.joined(separator: " ")
-      logger.info("Sending frame (\(data.count) bytes): \(hexString)...")
-      totalBytesSent += UInt64(data.count)
-    }
-
-    try await channel.writeAndFlush(frame)
-
-    // Update statistics
-    totalMessagesSent += 1
+    // Send through the async channel for processing
+    await outboundCommands.send(frame)
   }
 
-  /// Start background processing (equivalent to C# Setup method)
-  private func startBackgroundProcessing() {
-    logger.info("Creating background processing task")
-    backgroundProcessingTask = Task.detached { [weak self] in
-      guard let self = self else { return }
-      self.logger.info("Background processing task started")
-      await self.markFrameProcessingStarted()
-      await self.processIncomingFramesContinuously()
+  /// Process the connection lifecycle in a structured manner
+  private func processConnection(_ asyncChannel: NIOAsyncChannel<PulsarFrame, PulsarFrame>) async throws {
+    logger.trace("Starting connection processing")
+    
+    // Mark connection as active
+    updateState(.connected)
+    connectedAt = Date()
+    logger.debug("Successfully connected to Pulsar", metadata: ["host": "\(url.host)", "port": "\(url.port)"])
+    
+    // Use executeThenClose for scoped access to inbound/outbound streams
+    do {
+      try await asyncChannel.executeThenClose { inbound, outbound in
+        try await self.processStreams(inbound: inbound, outbound: outbound)
+      }
+    } catch is CancellationError {
+      logger.debug("Connection processing cancelled")
+      throw CancellationError()
+    } catch {
+      logger.error("Connection processing error", metadata: ["error": "\(error)"])
+      // Propagate error to connection state and fail all pending operations
+      await self.handleConnectionError(error)
+      throw error
     }
-    logger.info("Background processing task created")
   }
-
-  /// Mark that frame processing has started
-  private func markFrameProcessingStarted() {
-    frameProcessingStarted = true
-    logger.info("Frame processing marked as started")
-  }
-
-  /// Wait for frame processing to start
-  private func waitForFrameProcessing() async {
-    var attempts = 0
-    while !frameProcessingStarted && attempts < 50 {  // Max 500ms wait
-      try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
-      attempts += 1
-    }
-    if frameProcessingStarted {
-      logger.info("Frame processing confirmed started after \(attempts) attempts")
-    } else {
-      logger.warning("Frame processing start timeout after \(attempts) attempts")
+  
+  /// Process both inbound and outbound streams concurrently
+  private func processStreams(
+    inbound: NIOAsyncChannelInboundStream<PulsarFrame>,
+    outbound: NIOAsyncChannelOutboundWriter<PulsarFrame>
+  ) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      // Add task for processing incoming frames
+      group.addTask {
+        try await self.processIncomingFrames(inbound: inbound)
+      }
+      
+      // Add task for processing outbound commands
+      group.addTask {
+        try await self.processOutboundCommands(outbound: outbound)
+      }
+      
+      // Add task for authentication refresh if needed
+      if let auth = self.authentication {
+        group.addTask {
+          try await self.processAuthenticationRefresh(auth: auth)
+        }
+      }
+      
+      // Wait for any task to complete or fail
+      try await group.next()
+      
+      // Cancel all other tasks
+      group.cancelAll()
     }
   }
 
@@ -368,110 +363,226 @@ actor Connection: PulsarConnection {
   private func setConnectedAt(_ date: Date) {
     connectedAt = date
   }
-
-  /// Continuously process incoming frames (equivalent to C# ProcessIncomingFrames)
-  private func processIncomingFramesContinuously() async {
-    guard let frameHandler = frameHandler else {
-      logger.error("No frame handler available for background processing")
-      return
+  
+  /// Get request ID from response frames
+  private func getResponseRequestId(from command: Pulsar_Proto_BaseCommand) -> UInt64? {
+    switch command.type {
+    case .producerSuccess:
+      return command.producerSuccess.requestID
+    case .success:
+      return command.success.requestID
+    case .error:
+      return command.error.requestID
+    case .lookupResponse:
+      return command.lookupTopicResponse.requestID
+    case .partitionedMetadataResponse:
+      return command.partitionMetadataResponse.requestID
+    case .getLastMessageIDResponse:
+      return command.getLastMessageIDResponse.requestID
+    case .getSchemaResponse:
+      return command.getSchemaResponse.requestID
+    case .newTxnResponse:
+      return command.newTxnResponse.requestID
+    case .addPartitionToTxnResponse:
+      return command.addPartitionToTxnResponse.requestID
+    case .endTxnResponse:
+      return command.endTxnResponse.requestID
+    case .addSubscriptionToTxnResponse:
+      return command.addSubscriptionToTxnResponse.requestID
+    default:
+      return nil
     }
+  }
 
-    logger.info("Starting continuous frame processing")
+  /// Process incoming frames from the broker
+  private func processIncomingFrames(
+    inbound: NIOAsyncChannelInboundStream<PulsarFrame>
+  ) async throws {
+    logger.trace("Starting incoming frame processing")
 
     var frameCount = 0
-    for await frame in frameHandler.incomingFrames {
+    for try await frame in inbound {
       frameCount += 1
-      logger.info("Received frame #\(frameCount): type=\(frame.command.type)")
+      logger.trace("Received frame", metadata: [
+        "frameNumber": "\(frameCount)", 
+        "type": "\(frame.command.type)"
+      ])
 
-      // Log more details for specific frame types
+      // Handle frames that complete or fail continuations
       switch frame.command.type {
       case .sendReceipt:
-        logger.info(
-          "SendReceipt details - producerID: \(frame.command.sendReceipt.producerID), sequenceID: \(frame.command.sendReceipt.sequenceID)"
-        )
+        // SendReceipt completes a producer send operation
+        logger.trace("SendReceipt details", metadata: [
+          "producerId": "\(frame.command.sendReceipt.producerID)", 
+          "sequenceId": "\(frame.command.sendReceipt.sequenceID)"
+        ])
+        // Forward to producer channel for handling
+        if let producerChannel = await channelManager.getProducer(id: frame.command.sendReceipt.producerID) {
+          await producerChannel.handleSendReceipt(frame.command.sendReceipt)
+        }
+        
       case .sendError:
-        logger.error(
-          "SendError details - producerID: \(frame.command.sendError.producerID), sequenceID: \(frame.command.sendError.sequenceID), error: \(frame.command.sendError.error)"
-        )
+        // SendError fails a producer send operation
+        logger.error("SendError received", metadata: [
+          "producerId": "\(frame.command.sendError.producerID)",
+          "sequenceId": "\(frame.command.sendError.sequenceID)",
+          "error": "\(frame.command.sendError.error)"
+        ])
+        
       case .error:
-        logger.error(
-          "Error frame - requestID: \(frame.command.error.requestID), message: \(frame.command.error.message)"
-        )
+        // Error fails a pending request continuation
+        logger.error("Error frame received", metadata: [
+          "requestId": "\(frame.command.error.requestID)",
+          "message": "\(frame.command.error.message)"
+        ])
+        // Check if this error is for a pending request
+        if let continuation = pendingRequests.removeValue(forKey: frame.command.error.requestID) {
+          // Map server error code to appropriate client error
+          let error: PulsarClientError
+          switch frame.command.error.error {
+          case .authenticationError, .authorizationError:
+            error = .authorizationFailed(frame.command.error.message)
+          case .metadataError:
+            error = .metadataFailed(frame.command.error.message)
+          case .persistenceError:
+            error = .persistenceFailed(frame.command.error.message)
+          case .checksumError:
+            error = .checksumFailed
+          case .consumerBusy:
+            error = .consumerBusy(frame.command.error.message)
+          case .producerBusy:
+            error = .producerBusy(frame.command.error.message)
+          case .producerBlockedQuotaExceededError:
+            error = .producerBlockedQuotaExceeded
+          case .topicTerminatedError:
+            error = .topicTerminated(frame.command.error.message)
+          case .incompatibleSchema:
+            error = .incompatibleSchema(frame.command.error.message)
+          case .consumerAssignError:
+            error = .consumerAssignFailed(frame.command.error.message)
+          case .notAllowedError:
+            error = .notAllowed(frame.command.error.message)
+          default:
+            error = .protocolError("Server error: \(frame.command.error.message)")
+          }
+          continuation.finish(throwing: error)
+        }
+        
+      case .producerSuccess, .success, .lookupResponse, .partitionedMetadataResponse,
+           .getLastMessageIDResponse, .getSchemaResponse, .newTxnResponse,
+           .addPartitionToTxnResponse, .endTxnResponse, .addSubscriptionToTxnResponse:
+        // These are response frames that complete pending requests
+        if let requestId = getResponseRequestId(from: frame.command),
+           let continuation = pendingRequests.removeValue(forKey: requestId) {
+          logger.debug("Completing request", metadata: [
+            "requestId": "\(requestId)",
+            "responseType": "\(frame.command.type)"
+          ])
+          continuation.yield(frame.command)
+          continuation.finish()
+        } else {
+          logger.warning("Received response without matching request", metadata: [
+            "type": "\(frame.command.type)"
+          ])
+        }
+        
       default:
-        break
+        // Process all other frames through the enhanced handler
+        // This includes server-initiated frames like ping, message, etc.
+        handleIncomingFrame(frame)
       }
-
-      // CONNECTED is handled synchronously in the frame handler
-      if frame.command.type == .connected {
-        logger.warning(
-          "CONNECTED frame received in background processing - this should have been handled synchronously"
-        )
-        continue
-      }
-
-      // Process all other frames through the enhanced handler
-      handleIncomingFrame(frame)
 
       // Exit if connection is no longer active
       if _state == .closed || _state == .closing {
-        logger.info("Stopping frame processing - connection closed")
+        logger.trace("Stopping frame processing - connection closed")
         break
       }
     }
 
-    logger.info("Frame processing loop ended after \(frameCount) frames")
+    logger.trace("Incoming frame processing ended", metadata: ["frameCount": "\(frameCount)"])
   }
-
-  // MARK: - Authentication Refresh
-
-  /// Start authentication refresh task if authentication supports it
-  private func startAuthenticationRefreshTask() {
-    guard let auth = authentication else { return }
-
-    authRefreshTask = Task { [weak self] in
-      guard let self = self else { return }
-
-      logger.info("Starting authentication refresh task")
-
-      while !Task.isCancelled {
-        let currentState = await self._state
-        guard currentState == .connected else { break }
-        do {
-          // Check if authentication needs refresh
-          if await auth.needsRefresh() {
-            logger.info("Authentication needs refresh")
-
-            // Get fresh authentication data
-            let authData = try await auth.getAuthenticationData()
-
-            // Create auth data
-            var authDataProto = Pulsar_Proto_AuthData()
-            authDataProto.authMethodName = auth.authenticationMethodName
-            authDataProto.authData = authData
-
-            // Send auth response (broker will validate and update)
-            let authResponse = await commandBuilder.authResponse(response: authDataProto)
-            let frame = PulsarFrame(command: authResponse)
-
-            try await sendFrame(frame)
-            logger.info("Sent refreshed authentication data")
-          }
-
-          // Wait before next check
-          try await Task.sleep(nanoseconds: UInt64(authRefreshInterval * 1_000_000_000))
-
-        } catch {
-          if !Task.isCancelled {
-            logger.error("Authentication refresh failed: \(error)")
-            // Continue trying unless task is cancelled
-            try? await Task.sleep(nanoseconds: 5_000_000_000)  // Wait 5 seconds before retry
-          }
+  
+  /// Process outbound commands to be sent to the broker
+  private func processOutboundCommands(
+    outbound: NIOAsyncChannelOutboundWriter<PulsarFrame>
+  ) async throws {
+    logger.trace("Starting outbound command processing")
+    
+    var commandCount = 0
+    for await frame in outboundCommands {
+      commandCount += 1
+      
+      // Debug: Log the frame being sent
+      let encoder = PulsarFrameEncoder()
+      if let buffer = try? encoder.encode(frame: frame) {
+        let previewLength = min(100, buffer.readableBytes)
+        let hexString: String
+        if let previewBytes = buffer.getBytes(at: buffer.readerIndex, length: previewLength) {
+          hexString = previewBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        } else {
+          hexString = "<no preview>"
         }
+        logger.trace("Sending frame", metadata: [
+          "commandNumber": "\(commandCount)",
+          "bytes": "\(buffer.readableBytes)", 
+          "preview": "\(hexString)..."
+        ])
+        totalBytesSent += UInt64(buffer.readableBytes)
       }
 
-      logger.info("Authentication refresh task ended")
+      // NIOAsyncChannel handles backpressure automatically
+      try await outbound.write(frame)
+
+      // Update statistics
+      totalMessagesSent += 1
+      
+      // Exit if connection is no longer active
+      if _state == .closed || _state == .closing {
+        logger.trace("Stopping outbound processing - connection closed")
+        break
+      }
     }
+    
+    logger.trace("Outbound command processing ended", metadata: ["commandCount": "\(commandCount)"])
   }
+  
+  /// Process authentication refresh periodically
+  private func processAuthenticationRefresh(auth: Authentication) async throws {
+    logger.debug("Starting authentication refresh processing")
+    
+    while !Task.isCancelled && _state == .connected {
+      // Check if enough time has passed since last refresh
+      let timeSinceLastRefresh = Date().timeIntervalSince(lastAuthRefresh)
+      if timeSinceLastRefresh >= authRefreshInterval {
+        // Check if authentication needs refresh
+        if await auth.needsRefresh() {
+          logger.debug("Authentication needs refresh")
+          
+          // Get fresh authentication data
+          let authData = try await auth.getAuthenticationData()
+          
+          // Create auth data
+          var authDataProto = Pulsar_Proto_AuthData()
+          authDataProto.authMethodName = auth.authenticationMethodName
+          authDataProto.authData = authData
+          
+          // Send auth response (broker will validate and update)
+          let authResponse = commandBuilder.authResponse(response: authDataProto)
+          let frame = PulsarFrame(command: authResponse)
+          
+          await outboundCommands.send(frame)
+          lastAuthRefresh = Date()
+          logger.debug("Sent refreshed authentication data")
+        }
+      }
+      
+      // Wait before next check
+      try await Task.sleep(nanoseconds: UInt64(min(authRefreshInterval, 5.0) * 1_000_000_000))
+    }
+    
+    logger.debug("Authentication refresh processing ended")
+  }
+
 
 }
 
@@ -493,7 +604,7 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
       var bufferCopy = buffer
       if let bytes = bufferCopy.readBytes(length: min(readableBytes, 50)) {
         let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-        logger.info("Raw incoming data (\(readableBytes) bytes): \(hexString)...")
+        logger.trace("Raw incoming data", metadata: ["bytes": "\(readableBytes)", "preview": "\(hexString)..."])
       }
     }
 
@@ -509,7 +620,7 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
       var bufferCopy = buffer
       if let bytes = bufferCopy.readBytes(length: min(readableBytes, 100)) {
         let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-        logger.info("Raw outgoing data (\(readableBytes) bytes): \(hexString)...")
+        logger.trace("Raw outgoing data", metadata: ["bytes": "\(readableBytes)", "preview": "\(hexString)..."])
       }
     }
 
@@ -520,14 +631,14 @@ final class RawDataLogger: ChannelDuplexHandler, @unchecked Sendable {
 
 // MARK: - Frame Codec
 
-final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
+internal final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
   typealias InboundOut = PulsarFrame
 
   private let frameDecoder = PulsarFrameDecoder()
   private let logger = Logger(label: "PulsarFrameByteDecoder")
 
   func decode(context: ChannelHandlerContext, buffer: inout ByteBuffer) throws -> DecodingState {
-    logger.info("Decode called with \(buffer.readableBytes) readable bytes")
+    logger.trace("Decode called", metadata: ["readableBytes": "\(buffer.readableBytes)"])
 
     guard buffer.readableBytes >= 4 else {
       return .needMoreData
@@ -545,117 +656,35 @@ final class PulsarFrameByteDecoder: ByteToMessageDecoder, @unchecked Sendable {
       return .needMoreData
     }
 
-    // Read the complete frame
-    guard let bytes = buffer.readBytes(length: Int(totalSize) + 4) else {
-      return .needMoreData
-    }
-    let data = Data(bytes)
+    // Save the current reader index
+    let startIndex = buffer.readerIndex
 
-    // Log first bytes
-    let hexString = data.prefix(50).map { String(format: "%02x", $0) }.joined(separator: " ")
-    logger.debug("Received frame (\(data.count) bytes): \(hexString)...")
-
-    if let frame = try frameDecoder.decode(from: data) {
-      logger.debug("Decoded frame: type=\(frame.command.type)")
+    // Try to decode the frame directly from the ByteBuffer
+    if let frame = try frameDecoder.decode(from: &buffer) {
+      logger.trace("Decoded frame", metadata: ["type": "\(frame.command.type)"])
       context.fireChannelRead(wrapInboundOut(frame))
     } else {
+      // Reset reader index if decoding failed
+      buffer.moveReaderIndex(to: startIndex)
       logger.error("Failed to decode frame")
+      return .needMoreData
     }
 
     return .continue
   }
 }
 
-final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
+internal final class PulsarFrameByteEncoder: MessageToByteEncoder, @unchecked Sendable {
   typealias OutboundIn = PulsarFrame
 
   private let frameEncoder = PulsarFrameEncoder()
 
   func encode(data: PulsarFrame, out: inout ByteBuffer) throws {
-    let encoded = try frameEncoder.encode(frame: data)
-    out.writeBytes(encoded)
+    var encoded = try frameEncoder.encode(frame: data)
+    out.writeBuffer(&encoded)
   }
 }
 
-// MARK: - Frame Handler
-
-final class PulsarFrameHandler: ChannelInboundHandler, @unchecked Sendable {
-  typealias InboundIn = PulsarFrame
-
-  private weak var connection: Connection?
-  internal let frameStreamContinuation: AsyncStream<PulsarFrame>.Continuation
-  let incomingFrames: AsyncStream<PulsarFrame>
-  private var connectedHandler: ((PulsarFrame) -> Void)?
-
-  init(connection: Connection) {
-    self.connection = connection
-    // Use unbounded buffering to ensure no frames are dropped
-    (self.incomingFrames, self.frameStreamContinuation) = AsyncStream<PulsarFrame>.makeStream(
-      bufferingPolicy: .unbounded
-    )
-  }
-
-  func setConnectedHandler(_ handler: @escaping (PulsarFrame) -> Void) {
-    self.connectedHandler = handler
-  }
-
-  func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-    let frame = unwrapInboundIn(data)
-
-    // Special synchronous handling for CONNECTED
-    if frame.command.type == .connected {
-      if let connection = connection {
-        Task {
-          connection.logger.debug(
-            "CONNECTED frame received",
-            metadata: [
-              "serverVersion": "\(frame.command.connected.serverVersion)",
-              "protocolVersion": "\(frame.command.connected.protocolVersion)",
-            ])
-        }
-      }
-
-      // Call synchronous handler if set
-      if let handler = connectedHandler {
-        handler(frame)
-        connectedHandler = nil  // Clear after use
-        return  // Don't yield CONNECTED to AsyncStream
-      }
-    }
-
-    frameStreamContinuation.yield(frame)
-
-    // Frame processing is now handled by background processing task
-    // Remove redundant Task here to avoid duplicate processing
-  }
-
-  func errorCaught(context: ChannelHandlerContext, error: Error) {
-    if let connection = connection {
-      Task {
-        connection.logger.error("PulsarFrameHandler error: \(error)")
-      }
-    }
-    frameStreamContinuation.finish()
-    context.close(promise: nil)
-  }
-
-  func channelInactive(context: ChannelHandlerContext) {
-    if let connection = connection {
-      Task {
-        connection.logger.warning("PulsarFrameHandler channel became inactive")
-      }
-    }
-    frameStreamContinuation.finish()
-  }
-
-  func channelActive(context: ChannelHandlerContext) {
-    if let connection = connection {
-      Task {
-        connection.logger.info("PulsarFrameHandler channel is active")
-      }
-    }
-  }
-}
 
 // MARK: - URL Parsing
 

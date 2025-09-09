@@ -32,7 +32,13 @@ class ProducerIntegrationTests {
     try await producer.send(messageContent)
 
     // Receive message
-    let receivedMessage = try await consumer.receive(timeout: 5.0)
+    var iterator = consumer.makeAsyncIterator()
+    guard let receivedMessageOpt = try await iterator.next() else {
+      throw PulsarClientError.consumerClosed
+    }
+    guard let receivedMessage = receivedMessageOpt as? Message<String> else {
+      throw PulsarClientError.unknownError("Failed to cast message")
+    }
 
     #expect(receivedMessage.value == messageContent)
     // MessageId is non-optional so test for a valid ledgerId instead
@@ -69,7 +75,6 @@ class ProducerIntegrationTests {
     let sendTasks = messages.map { msg in
       Task { try await producer.send(msg) }
     }
-
     let messageIds = try await withThrowingTaskGroup(of: MessageId.self) { group in
       for task in sendTasks {
         group.addTask { try await task.value }
@@ -86,10 +91,15 @@ class ProducerIntegrationTests {
 
     // Receive all messages
     var receivedMessages: [String] = []
-    for _ in 0..<10 {
-      let msg = try await consumer.receive(timeout: 5.0)
-      receivedMessages.append(msg.value)
-      try await consumer.acknowledge(msg)
+    var messageCount = 0
+    for try await msg in consumer {
+      guard let message = msg as? Message<String> else {
+        throw PulsarClientError.unknownError("Failed to cast message to Message<String>")
+      }
+      receivedMessages.append(message.value)
+      try await consumer.acknowledge(message)
+      messageCount += 1
+      if messageCount >= 10 { break }
     }
 
     #expect(Set(receivedMessages) == Set(messages))
