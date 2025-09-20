@@ -402,7 +402,6 @@ public final class PulsarClientBuilder {
     internal var authentication: Authentication?
     internal var encryptionPolicy: EncryptionPolicy = .preferUnencrypted
     internal var operationTimeout: TimeInterval = 30.0
-    internal var telemetryConfiguration: TelemetryConfiguration = .disabled
     
     /// Initialize a new PulsarClientBuilder
     public init() {}
@@ -447,24 +446,6 @@ public final class PulsarClientBuilder {
         return self
     }
     
-    /// Configure telemetry for the client
-    /// - Parameter telemetry: The telemetry configuration
-    @discardableResult
-    public func withTelemetry(_ telemetry: TelemetryConfiguration) -> PulsarClientBuilder {
-        self.telemetryConfiguration = telemetry
-        return self
-    }
-    
-    /// Configure telemetry using a builder
-    /// - Parameter configure: Configuration closure for telemetry
-    @discardableResult
-    public func withTelemetry(configure: (TelemetryConfigurationBuilder) -> Void) -> PulsarClientBuilder {
-        let builder = TelemetryConfigurationBuilder()
-        configure(builder)
-        self.telemetryConfiguration = builder.build()
-        return self
-    }
-    
     /// Build the PulsarClient
     /// - Returns: A new PulsarClient instance
     public func build() -> PulsarClient {
@@ -487,8 +468,7 @@ public final class PulsarClientBuilder {
             enableTransaction: false,
             statsInterval: 60.0,
             logger: logger,
-            eventLoopGroup: nil,
-            telemetry: telemetryConfiguration
+            eventLoopGroup: nil
         )
         
         return PulsarClient(configuration: configuration)
@@ -512,7 +492,6 @@ struct ClientConfiguration {
     let statsInterval: TimeInterval
     let logger: Logger
     let eventLoopGroup: EventLoopGroup?
-    let telemetry: TelemetryConfiguration
 }
 
 /// Client statistics
