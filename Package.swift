@@ -1,4 +1,4 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -28,7 +28,9 @@ let package = Package(
         .package(url: "https://github.com/edgeengineer/cyclic-redundancy-check.git", from: "0.0.5"),
         // Telemetry dependencies
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.4.0"),
-        .package(url: "https://github.com/apple/swift-distributed-tracing.git", from: "1.1.0")
+        .package(url: "https://github.com/apple/swift-distributed-tracing.git", from: "1.1.0"),
+        // Testing dependency
+        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -51,11 +53,17 @@ let package = Package(
         ),
         .testTarget(
             name: "PulsarClientTests",
-            dependencies: ["PulsarClient"]
+            dependencies: [
+                "PulsarClient",
+                .product(name: "Testing", package: "swift-testing")
+            ]
         ),
         .testTarget(
             name: "PulsarClientIntegrationTests",
-            dependencies: ["PulsarClient"]
+            dependencies: [
+                "PulsarClient",
+                .product(name: "Testing", package: "swift-testing")
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]
