@@ -131,7 +131,7 @@ extension ConsumerChannel {
     var isActive: Bool = true
   }
 
-  private static var messageStates: [UInt64: MessageState] = [:]
+  nonisolated(unsafe) private static var messageStates: [UInt64: MessageState] = [:]
 
   /// Handle incoming message
   func handleMessage(

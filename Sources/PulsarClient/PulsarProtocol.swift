@@ -38,10 +38,7 @@ public struct PulsarFrame: Sendable {
     do {
       commandData = try command.serializedData()
     } catch {
-      print("ERROR: Failed to serialize command: \(error)")
-      print("Command type: \(command.type)")
-      print("Command details: \(command)")
-      fatalError("Failed to serialize command: \(error)")
+      fatalError("Failed to serialize command (\(command.type)): \(error)")
     }
     self.commandSize = UInt32(commandData.count)
 
@@ -52,14 +49,6 @@ public struct PulsarFrame: Sendable {
         let metadataData = try metadata.serializedData()
         totalSize += UInt32(metadataData.count) + 4  // 4 bytes for metadata size + metadata data
       } catch {
-        print("ERROR: Failed to serialize metadata: \(error)")
-        print("Metadata details:")
-        print(
-          "  hasProducerName: \(metadata.hasProducerName), producerName: '\(metadata.producerName)'"
-        )
-        print("  hasSequenceID: \(metadata.hasSequenceID), sequenceID: \(metadata.sequenceID)")
-        print("  hasPublishTime: \(metadata.hasPublishTime), publishTime: \(metadata.publishTime)")
-        print("  compression: \(metadata.compression)")
         fatalError("Failed to serialize metadata: \(error)")
       }
     }
@@ -104,13 +93,6 @@ public struct PulsarFrameEncoder {
     do {
       metadataData = try metadata.serializedData()
     } catch {
-      print("ERROR: Failed to serialize metadata in encoder: \(error)")
-      print("Metadata details:")
-      print(
-        "  hasProducerName: \(metadata.hasProducerName), producerName: '\(metadata.producerName)'")
-      print("  hasSequenceID: \(metadata.hasSequenceID), sequenceID: \(metadata.sequenceID)")
-      print("  hasPublishTime: \(metadata.hasPublishTime), publishTime: \(metadata.publishTime)")
-      print("  compression: \(metadata.compression)")
       fatalError("Failed to serialize metadata in encoder: \(error)")
     }
     let metadataSize = UInt32(metadataData.count)
